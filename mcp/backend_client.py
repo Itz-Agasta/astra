@@ -74,6 +74,79 @@ def _request(
     return resp.json()
 
 
+# ── MCP activity feed (rendered on the Stellarium HUD) ─────────────────────
+
+
+_TOOL_BY_ENDPOINT = {
+    ("POST", "/calibrate"): "point_to",
+    ("DELETE", "/calibrate"): "abort_calibration",
+    ("POST", "/capture/solve"): "get_current_orientation",
+    ("GET", "/objects/visible"): "list_visible_objects",
+    ("POST", "/slew"): "manual_slew",
+    ("GET", "/status"): "get_telescope_status",
+}
+
+
+def _fmt(v: object) -> str:
+    if isinstance(v, float):
+        return f"{v:.4f}" if abs(v) < 1000 else f"{v:.1f}"
+    return str(v)[:40]
+
+
+def _fields_for(tool: str, result: dict) -> list[list[str]]:
+    if tool == "get_telescope_status":
+        keys = ("solver_backend", "active_job", "stellarium_reachable")
+    elif tool == "get_current_orientation":
+        keys = ("ra", "dec", "stars_matched", "residual_arcsec")
+    elif tool == "list_visible_objects":
+        objs = result.get("objects") or []
+        names = ", ".join(o.get("name", "") for o in objs[:3] if isinstance(o, dict))
+        return [["count", str(len(objs))], ["objects", names[:40]]]
+    elif tool == "manual_slew":
+        keys = ("ra", "dec", "delta_ra_arcsec", "delta_dec_arcsec")
+    elif tool == "point_to":
+        keys = ("job_id", "target", "target_ra", "target_dec")
+    elif tool == "get_calibration_status":
+        keys = ("status", "iteration", "total_error_arcsec")
+    elif tool == "abort_calibration":
+        keys = ("job_id", "status")
+    else:
+        keys = ()
+    out: list[list[str]] = []
+    for k in keys:
+        if k in result and result[k] is not None:
+            out.append([k, _fmt(result[k])])
+    return out[:5]
+
+
+def _report_activity(method: str, path: str, result: dict) -> None:
+    """Best-effort notification of one MCP call for the on-screen HUD."""
+    base = path.split("/")[1] if path.startswith("/") else path.split("/")[0]
+    tool = _TOOL_BY_ENDPOINT.get((method, f"/{base}"))
+    if tool is None and method == "GET" and base == "calibrate":
+        tool = "get_calibration_status"
+    if tool is None:
+        return
+    try:
+        with httpx.Client(base_url=BACKEND_BASE_URL, timeout=httpx.Timeout(2.0)) as client:
+            client.post(
+                "/mcp/activity",
+                json={"tool": tool, "fields": _fields_for(tool, result)},
+            )
+    except httpx.HTTPError:
+        pass
+
+
+_request_orig = _request
+
+
+def _request(method: str, path: str, **kwargs) -> dict:
+    result = _request_orig(method, path, **kwargs)
+    if not path.startswith("/mcp/"):
+        _report_activity(method, path, result)
+    return result
+
+
 # ── Tool-specific methods ──────────────────────────────────────────────────
 
 

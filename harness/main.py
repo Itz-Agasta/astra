@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+import time
 from contextlib import asynccontextmanager
 
 import httpx
@@ -246,6 +247,32 @@ async def post_slew(req: SlewRequest) -> dict:
         "delta_dec_arcsec": req.delta_dec_arcsec,
         "message": f"Nudged to RA={ra:.4f} Dec={dec:.4f}",
     }
+
+
+#  MCP activity feed (populated by astra-mcp, rendered by the Stellarium HUD)
+
+
+@app.post("/mcp/activity")
+async def post_mcp_activity(call: dict) -> dict:
+    """Record the latest MCP tool call for on-screen display."""
+    raw = call.get("fields") or []
+    fields: list[list[str]] = []
+    if isinstance(raw, list):
+        for item in raw[:5]:
+            if isinstance(item, (list, tuple)) and len(item) >= 2:
+                fields.append([str(item[0])[:24], str(item[1])[:40]])
+    store.last_mcp_call = {
+        "tool": str(call.get("tool", "unknown")),
+        "fields": fields,
+        "ts": time.time(),
+    }
+    return {"ok": True}
+
+
+@app.get("/mcp/activity")
+async def get_mcp_activity() -> dict:
+    """Latest MCP tool call (or null)."""
+    return store.last_mcp_call or {"tool": None}
 
 
 @app.get("/status")
