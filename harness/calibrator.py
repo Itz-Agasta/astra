@@ -17,6 +17,7 @@ import logging
 import math
 import uuid
 
+from . import stellarium
 from .capture import capture_frame
 from .config import cfg
 from .motor import halt, slew
@@ -71,10 +72,62 @@ async def abort_job(job_id: str) -> bool:
     return True
 
 
+#  Holding the sky still
+
+
+async def _freeze_sky() -> float | None:
+    """Pause Stellarium's clock for the duration of a run.
+
+    We resolve the target once, then spend several iterations driving the
+    mount to those fixed coordinates. With the clock running, the object walks
+    away from them underneath us -- the Moon moves ~0.9"/s (about 19" over a
+    20s run, mostly topocentric parallax as the Earth turns) against a 30"
+    convergence threshold, so a live sky alone can hold the loop above its
+    target. Planets manage ~0.03"/s and stars none at all, but freezing costs
+    nothing and makes the target genuinely stationary for every category.
+
+    Returns the previous rate so it can be handed back, or None if we could
+    not read it. Never fatal: a moving sky degrades accuracy, it does not
+    break the loop.
+    """
+    if not cfg.simulation.enabled:
+        return None
+    try:
+        previous = await stellarium.get_time_rate()
+        await stellarium.set_time_rate(0.0)
+    except Exception as exc:
+        log.warning(f"Could not pause Stellarium's clock, sky keeps moving: {exc}")
+        return None
+    log.info(f"Stellarium clock paused (was {previous} JD/s)")
+    return previous
+
+
+async def _thaw_sky(previous: float | None) -> None:
+    """Hand the clock back exactly as we found it."""
+    if previous is None:
+        return
+    try:
+        await stellarium.set_time_rate(previous)
+    except Exception as exc:
+        log.warning(f"Could not restore Stellarium time rate to {previous}: {exc}")
+
+
 #  Core loop
 
 
 async def _calibration_loop(job_id: str) -> None:
+    """Freeze the sky, run the loop, and always give the clock back."""
+    previous_rate = await _freeze_sky()
+    try:
+        await _run_calibration(job_id)
+    finally:
+        # Safe to await even when we land here because the task was cancelled:
+        # Task.cancel() delivers CancelledError once, so this await is not
+        # itself cancelled and the user never gets left with a frozen sim.
+        await _thaw_sky(previous_rate)
+
+
+async def _run_calibration(job_id: str) -> None:
     job = store.get_job(job_id)
     if not job:
         return
@@ -194,6 +247,18 @@ async def _calibration_loop(job_id: str) -> None:
 
         # 4. Convergence check
         if total_error < thr:
+            # The estimate is under threshold, but the view is still parked
+            # where the previous 0.8x step left it, so what is actually on the
+            # sky is this error *plus* the solver's own residual -- exactly the
+            # offset you see when you zoom in on the target. Spend one more
+            # slew closing the whole remaining gap, and what is left is the
+            # solver residual by itself.
+            total_error = await _final_correction(
+                job_id, current_ra, current_dec, delta_ra, delta_dec, total_error
+            )
+            job = store.get_job(job_id)
+            if job is None or job.status in ("aborted", "failed"):
+                return
             store.update_job(
                 job_id,
                 status="done",
@@ -223,6 +288,67 @@ async def _calibration_loop(job_id: str) -> None:
         f"Did not converge in {max_iter} iterations. "
         "Check for physical obstruction or large initial offset.",
     )
+
+
+async def _final_correction(
+    job_id: str,
+    current_ra: float,
+    current_dec: float,
+    delta_ra: float,
+    delta_dec: float,
+    total_error: float,
+) -> float:
+    """Close the last of the offset undamped, then re-measure where we ended up.
+
+    Damping exists to keep the loop from oscillating while it is chasing a
+    large offset. On the final step there is nothing left to oscillate into,
+    so applying the full delta is safe and removes the one term the loop
+    otherwise leaves on the sky.
+
+    Returns the re-measured error, or the original if anything goes wrong --
+    the job has already met its threshold, so a failure here is cosmetic and
+    must never turn a successful lock into a failure.
+    """
+    try:
+        await slew(current_ra + delta_ra, current_dec + delta_dec)
+        image, hint = await capture_frame(frame_index=0)
+        result = solve(image, hint=hint)
+    except Exception as exc:
+        log.warning(f"[{job_id}] final correction failed, keeping earlier fix: {exc}")
+        return total_error
+
+    job = store.get_job(job_id)
+    if job is None:
+        return total_error
+
+    d_ra = (job.target_ra - result.ra + 180) % 360 - 180
+    d_dec = job.target_dec - result.dec
+    refined = math.sqrt(d_ra**2 + d_dec**2) * 3600
+
+    store.update_job(
+        job_id,
+        current_ra=round(result.ra, 6),
+        current_dec=round(result.dec, 6),
+        error_ra_arcsec=round(abs(d_ra) * 3600, 2),
+        error_dec_arcsec=round(abs(d_dec) * 3600, 2),
+        total_error_arcsec=round(refined, 2),
+        solver_residual_arcsec=result.residual_arcsec,
+        stars_matched=result.stars_matched,
+        solve_time_ms=result.solve_time_ms,
+    )
+    job.history.append(
+        {
+            "iteration": job.iteration,
+            "error_arcsec": round(refined, 2),
+            "ra": round(result.ra, 6),
+            "dec": round(result.dec, 6),
+            "solver_residual_arcsec": result.residual_arcsec,
+            "elapsed_seconds": job.elapsed_seconds,
+            "final_correction": True,
+        }
+    )
+    log.info(f'[{job_id}] final correction: {total_error:.1f}" -> {refined:.1f}"')
+    return refined
 
 
 async def _fail(job_id: str, reason: str, message: str) -> None:
