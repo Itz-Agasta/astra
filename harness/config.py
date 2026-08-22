@@ -93,13 +93,27 @@ class CalibrationConfig:
 
 @dataclass(frozen=True)
 class ESP32Config:
-    host: str = field(default_factory=lambda: os.getenv("CCE_ESP32_HOST", "localhost"))
-    port: int = field(default_factory=lambda: int(os.getenv("CCE_ESP32_PORT", "80")))
+    # ESP32 is wired via USB, not WiFi -- this is a serial device path, not a host.
+    port: str = field(default_factory=lambda: os.getenv("CCE_ESP32_PORT", "/dev/ttyUSB0"))
+    baud_rate: int = field(default_factory=lambda: int(os.getenv("CCE_ESP32_BAUD", "115200")))
+    timeout_s: float = field(default_factory=lambda: float(os.getenv("CCE_ESP32_TIMEOUT_S", "5.0")))
+    reconnect_delay_s: float = field(
+        default_factory=lambda: float(os.getenv("CCE_ESP32_RECONNECT_DELAY_S", "2.0"))
+    )
 
-    @property
-    def url(self) -> str:
-        return f"http://{self.host}:{self.port}"
-
+    # --- Mock-mount servo calibration (approximate is fine -- eyeball these) ---
+    az_offset_deg: float = field(
+        default_factory=lambda: float(os.getenv("CCE_ESP32_AZ_OFFSET_DEG", "0.0"))
+    )
+    alt_offset_deg: float = field(
+        default_factory=lambda: float(os.getenv("CCE_ESP32_ALT_OFFSET_DEG", "0.0"))
+    )
+    invert_az: bool = field(
+        default_factory=lambda: os.getenv("CCE_ESP32_INVERT_AZ", "false").lower() in ("1", "true", "yes")
+    )
+    invert_alt: bool = field(
+        default_factory=lambda: os.getenv("CCE_ESP32_INVERT_ALT", "false").lower() in ("1", "true", "yes")
+    )
 
 @dataclass(frozen=True)
 class HarnessConfig:
