@@ -2,10 +2,6 @@ from __future__ import annotations
 
 import logging
 
-from astropy.time import Time
-from astroquery.jplhorizons import Horizons
-from astroquery.simbad import Simbad
-
 from .config import cfg
 
 log = logging.getLogger(__name__)
@@ -111,6 +107,10 @@ async def resolve(
 
 def _resolve_horizons(target: str, observer_location: dict[str, float]) -> tuple[float, float, str]:
     """Resolve via JPL Horizons. Works for planets, comets, asteroids."""
+    # Imported here, not at module scope: astroquery pulls in astropy and costs
+    # ~47 MB of RSS. A harness that never resolves should never pay for it.
+    from astropy.time import Time
+    from astroquery.jplhorizons import Horizons
 
     # Use NAIF ID if available to avoid ambiguity
     # for ~15 most common ambiguous query names
@@ -135,6 +135,7 @@ def _resolve_horizons(target: str, observer_location: dict[str, float]) -> tuple
 
 def _resolve_simbad(target: str) -> tuple[float, float, str]:
     """Resolve via Simbad. Works for stars, nebulae, galaxies, clusters."""
+    from astroquery.simbad import Simbad
 
     try:
         result = Simbad.query_object(target)
