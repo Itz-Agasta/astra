@@ -86,3 +86,14 @@ def manual_slew(dra_arcsec: float, ddec_arcsec: float) -> dict:
         except httpx.TimeoutException:
             raise RuntimeError("Backend request timed out")
     return _handle_response(resp)
+
+def list_visible_objects() -> list:
+    """Return the list of currently visible celestial objects from the backend."""
+    with _client() as client:
+        try:
+            resp = client.get("/visible-objects")
+        except httpx.ConnectError:
+            raise RuntimeError(f"Cannot reach backend at {BACKEND_BASE_URL}")
+        except httpx.TimeoutException:
+            raise RuntimeError("Backend request timed out")
+    return _handle_response(resp)
