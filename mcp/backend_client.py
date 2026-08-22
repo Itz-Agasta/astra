@@ -97,3 +97,48 @@ def list_visible_objects() -> list:
         except httpx.TimeoutException:
             raise RuntimeError("Backend request timed out")
     return _handle_response(resp)
+
+def get_telescope_status() -> dict:
+    """Return overall telescope system status (camera, solver, mount, active job)."""
+    with _client() as client:
+        try:
+            resp = client.get("/status")
+        except httpx.ConnectError:
+            raise RuntimeError(f"Cannot reach backend at {BACKEND_BASE_URL}")
+        except httpx.TimeoutException:
+            raise RuntimeError("Backend request timed out")
+    return _handle_response(resp)
+
+def get_current_orientation() -> dict:
+    """Fetch the telescope's current RA/Dec orientation from the mount."""
+    with _client() as client:
+        try:
+            resp = client.get("/orientation")
+        except httpx.ConnectError:
+            raise RuntimeError(f"Cannot reach backend at {BACKEND_BASE_URL}")
+        except httpx.TimeoutException:
+            raise RuntimeError("Backend request timed out")
+    return _handle_response(resp)
+
+def get_calibration_status(job_id: str) -> dict:
+    """Poll the backend for the current state of a calibration/alignment job."""
+    with _client() as client:
+        try:
+            resp = client.get(f"/jobs/{job_id}")
+        except httpx.ConnectError:
+            raise RuntimeError(f"Cannot reach backend at {BACKEND_BASE_URL}")
+        except httpx.TimeoutException:
+            raise RuntimeError("Backend request timed out")
+    return _handle_response(resp)
+
+def abort_calibration(job_id: str) -> dict:
+    """Send an abort signal for a running calibration job."""
+    with _client() as client:
+        try:
+            resp = client.post(f"/jobs/{job_id}/abort")
+        except httpx.ConnectError:
+            raise RuntimeError(f"Cannot reach backend at {BACKEND_BASE_URL}")
+        except httpx.TimeoutException:
+            raise RuntimeError("Backend request timed out")
+    return _handle_response(resp)
+
