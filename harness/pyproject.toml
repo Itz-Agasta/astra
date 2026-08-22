@@ -5,6 +5,11 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    "astropy>=8.0.1",
+    "astroquery>=0.4.11",
     "httpx>=0.28.1",
     "numpy>=2.5.2",
 ]
+
+[tool.ty]
+ignore = ["astropy", "astroquery"]
