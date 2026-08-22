@@ -16,19 +16,47 @@ _ser: serial.Serial | None = None
 _lock = asyncio.Lock()  # serializes access to the single shared serial port
 
 
-async def connect() -> None:
-    """Open the persistent USB-serial connection to the ESP32. Call once at startup."""
+async def connect(retries: int = 5) -> None:
+    """Open the persistent USB-serial connection to the ESP32. Call once at startup.
+
+    Retries with cfg.esp32.reconnect_delay_s between attempts. The ESP32 often
+    hasn't finished enumerating as a USB serial device yet if it was plugged
+    in / powered on around the same time the harness started -- opening the
+    port on the first try is not reliable, so a single attempt is not enough.
+    Raises the last error if every attempt fails, so the caller's try/except
+    is reporting a real, exhausted failure rather than one bad first guess.
+    """
     global _ser
     if _ser is not None and _ser.is_open:
         return
-    _ser = await asyncio.to_thread(
-        serial.Serial,
-        cfg.esp32.port,
-        cfg.esp32.baud_rate,
-        timeout=cfg.esp32.timeout_s,
-    )
-    await asyncio.sleep(2.0)  # ESP32 resets on port open -- give firmware time to boot
-    log.info(f"ESP32 connected on {cfg.esp32.port} @ {cfg.esp32.baud_rate} baud")
+
+    last_exc: Exception | None = None
+    for attempt in range(1, retries + 1):
+        try:
+            _ser = await asyncio.to_thread(
+                serial.Serial,
+                cfg.esp32.port,
+                cfg.esp32.baud_rate,
+                timeout=cfg.esp32.timeout_s,
+            )
+            await asyncio.sleep(2.0)  # ESP32 resets on port open -- give firmware time to boot
+            log.info(
+                f"ESP32 connected on {cfg.esp32.port} @ {cfg.esp32.baud_rate} baud "
+                f"(attempt {attempt}/{retries})"
+            )
+            return
+        except serial.SerialException as exc:
+            last_exc = exc
+            _ser = None
+            log.warning(
+                f"ESP32 connect attempt {attempt}/{retries} failed on {cfg.esp32.port}: {exc}"
+            )
+            if attempt < retries:
+                await asyncio.sleep(cfg.esp32.reconnect_delay_s)
+
+    raise RuntimeError(
+        f"Could not open ESP32 serial port {cfg.esp32.port} after {retries} attempts"
+    ) from last_exc
 
 
 async def disconnect() -> None:
