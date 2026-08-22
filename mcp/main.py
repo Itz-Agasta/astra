@@ -1,10 +1,11 @@
 from fastmcp import FastMCP
 from tools.point_to import register as register_point_to
-
+from tools.manual_slew import register as register_manual_slew
 
 def create_server() -> FastMCP:
     mcp = FastMCP("astra-telescope")
     register_point_to(mcp)
+    register_manual_slew(mcp)
     return mcp
 
 
