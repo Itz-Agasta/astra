@@ -19,7 +19,7 @@ import math
 
 import numpy as np
 
-from . import stellarium
+from . import mount
 from .config import cfg
 
 log = logging.getLogger(__name__)
@@ -53,13 +53,21 @@ async def capture_frame(frame_index: int = 0) -> tuple[np.ndarray, tuple[float, 
 
 
 async def _capture_stellarium() -> tuple[np.ndarray, tuple[float, float]]:
-    """Read the Stellarium view direction and render the sky there."""
-    try:
-        ra_deg, dec_deg = await stellarium.get_view()
-    except Exception as exc:
-        raise RuntimeError(f"Cannot reach Stellarium at {cfg.simulation.url}: {exc}") from exc
+    """Render the sky wherever the mount is actually pointing.
 
-    log.info(f"Stellarium view: RA={ra_deg:.4f} Dec={dec_deg:.4f}")
+    Note *actually*, not "wherever we told it to go". A mount with a pointing
+    error ends up somewhere other than the commanded coordinate, and a camera
+    bolted to that mount sees the sky at the real position. Rendering there is
+    what lets the plate solver measure a genuine hardware error -- INDI's own
+    CCD simulator does the same thing, snooping EQUATORIAL_PE so that injected
+    pointing errors show up in the star field.
+    """
+    try:
+        ra_deg, dec_deg = await mount.true_position()
+    except Exception as exc:
+        raise RuntimeError(f"Cannot read mount position ({mount.backend()}): {exc}") from exc
+
+    log.info(f"Camera pointed at: RA={ra_deg:.4f} Dec={dec_deg:.4f}")
 
     # The hint backend returns the Stellarium coords verbatim and never looks
     # at the frame, so rendering one would burn ~75 MB and load tetra3's 162 MB

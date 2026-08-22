@@ -4,10 +4,19 @@ calibrator.py — The closed-loop calibration algorithm.
 Core equations:
   err     = √(ΔRA² + ΔDec²) × 3600          (arcseconds)
   errₙ    = err₀ × (1 − k)ⁿ                 (geometric convergence)
-  ra'     = current_ra  + k × ΔRA            (damped correction)
-  dec'    = current_dec + k × ΔDec
+  cmd'    = cmd + k × Δ                      (damped correction)
 
 k = 0.8 (damping factor) — prevents oscillation from worm gear backlash.
+
+We correct the *commanded* coordinate, not the measured one. A mount with a
+pointing error E lands at cmd + E for whatever it is told, so re-deriving the
+command from the plate solve — cmd' = solved + k·Δ — reaches a steady state
+where Δ = E/k and simply stops there, converging to a fixed 1.25·E offset
+instead of to the target. Nudging the command carries E on both sides of the
+equation and it cancels, which is also how a real mount is corrected.
+
+With Stellarium as the mount E is zero and the two forms agree exactly, which
+is why this only shows up against real hardware.
 """
 
 from __future__ import annotations
@@ -17,7 +26,7 @@ import logging
 import math
 import uuid
 
-from . import stellarium
+from . import mount, stellarium
 from .capture import capture_frame
 from .config import cfg
 from .motor import halt, slew
@@ -263,9 +272,7 @@ async def _run_calibration(job_id: str) -> None:
             # offset you see when you zoom in on the target. Spend one more
             # slew closing the whole remaining gap, and what is left is the
             # solver residual by itself.
-            total_error = await _final_correction(
-                job_id, current_ra, current_dec, delta_ra, delta_dec, total_error
-            )
+            total_error = await _final_correction(job_id, delta_ra, delta_dec, total_error)
             job = store.get_job(job_id)
             if job is None or job.status in ("aborted", "failed"):
                 return
@@ -279,9 +286,18 @@ async def _run_calibration(job_id: str) -> None:
             await _showcase_zoom(job.target, job.source, total_error)
             return
 
-        # 5. Apply damped correction  ra' = ra + k·ΔRA
-        corrected_ra = current_ra + k * delta_ra
-        corrected_dec = current_dec + k * delta_dec
+        # 5. Nudge the command by the damped error.
+        # The mount's own idea of where it is *is* the last command it
+        # accepted, so this is "go a bit further in this direction" rather
+        # than "you are here, go there".
+        try:
+            commanded_ra, commanded_dec = await mount.reported_position()
+        except Exception as exc:
+            await _fail(job_id, "mount_timeout", f"Could not read mount position: {exc}")
+            return
+
+        corrected_ra = commanded_ra + k * delta_ra
+        corrected_dec = commanded_dec + k * delta_dec
 
         store.update_job(job_id, message=f"Iteration {iteration} — slewing (0.8 × Δ)")
 
@@ -303,8 +319,6 @@ async def _run_calibration(job_id: str) -> None:
 
 async def _final_correction(
     job_id: str,
-    current_ra: float,
-    current_dec: float,
     delta_ra: float,
     delta_dec: float,
     total_error: float,
@@ -316,12 +330,19 @@ async def _final_correction(
     so applying the full delta is safe and removes the one term the loop
     otherwise leaves on the sky.
 
-    Returns the re-measured error, or the original if anything goes wrong --
-    the job has already met its threshold, so a failure here is cosmetic and
-    must never turn a successful lock into a failure.
+    The refinement is only kept if it actually leaves us inside the
+    convergence threshold. A bad solve, a mount that did not go where it was
+    told, or a simulator hiccup can all make this step worse rather than
+    better, and accepting it unconditionally would let the job report success
+    while sitting hundreds of arcseconds off. On a bad outcome we put the
+    mount back where it was and keep the measurement we already trusted.
+
+    Returns the error to report, which is never worse than the one passed in.
     """
+    thr = cfg.calibration.converge_threshold_arcsec
     try:
-        await slew(current_ra + delta_ra, current_dec + delta_dec)
+        commanded_ra, commanded_dec = await mount.reported_position()
+        await slew(commanded_ra + delta_ra, commanded_dec + delta_dec)
         image, hint = await capture_frame(frame_index=0)
         result = solve(image, hint=hint)
     except Exception as exc:
@@ -335,6 +356,17 @@ async def _final_correction(
     d_ra = (job.target_ra - result.ra + 180) % 360 - 180
     d_dec = job.target_dec - result.dec
     refined = math.sqrt(d_ra**2 + d_dec**2) * 3600
+
+    if refined > thr:
+        log.warning(
+            f'[{job_id}] final correction left us {refined:.1f}" out, worse than the '
+            f'{thr:.0f}" threshold -- reverting to the {total_error:.1f}" fix'
+        )
+        try:
+            await slew(commanded_ra, commanded_dec)
+        except Exception as exc:
+            log.error(f"[{job_id}] could not revert the final correction: {exc}")
+        return total_error
 
     store.update_job(
         job_id,

@@ -25,7 +25,7 @@ run-harness:
 	uv run -m harness.main
 
 run-mcp:
-	uv run -m mcp.main
+	cd mcp && uv run python main.py
 
 dev-client:
 	bun run dev:client
