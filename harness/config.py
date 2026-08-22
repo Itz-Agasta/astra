@@ -77,7 +77,7 @@ class ESP32Config:
 
 
 @dataclass(frozen=True)
-class EngineConfig:
+class HarnessConfig:
     simulation: SimulationConfig = field(default_factory=SimulationConfig)
     observer: ObserverConfig = field(default_factory=ObserverConfig)
     solver: SolverConfig = field(default_factory=SolverConfig)
@@ -85,4 +85,4 @@ class EngineConfig:
     esp32: ESP32Config = field(default_factory=ESP32Config)
 
 
-cfg = EngineConfig()
+cfg = HarnessConfig()
