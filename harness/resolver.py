@@ -93,14 +93,51 @@ async def resolve(
         return await loop.run_in_executor(None, _resolve_horizons, target, observer_location)
 
     if category in ("star", "deep_sky"):
-        return await loop.run_in_executor(None, _resolve_simbad, target)
+        return await loop.run_in_executor(None, _resolve_simbad, target, observer_location)
 
     # category == "auto": try Simbad first, fall back to Horizons
     try:
-        return await loop.run_in_executor(None, _resolve_simbad, target)
+        return await loop.run_in_executor(None, _resolve_simbad, target, observer_location)
     except ValueError:
         log.info(f"Simbad failed for '{target}', trying Horizons")
         return await loop.run_in_executor(None, _resolve_horizons, target, observer_location)
+
+
+def _apparent_place(
+    ra_deg: float, dec_deg: float, observer_location: dict[str, float]
+) -> tuple[float, float]:
+    """Astrometric ICRS -> apparent place: where the object is actually seen.
+
+    Horizons and Simbad both hand back *astrometric* coordinates, but a
+    telescope -- and Stellarium -- sees the *apparent* position, displaced by
+    annual aberration as the Earth carries the observer sideways at 30 km/s.
+    That displacement reaches 20.5", and the plate solver cannot absorb it:
+    tetra3 matches against raw catalog positions, so it reports the boresight
+    in the catalog frame. Skipping this correction leaves the loop converging
+    to a point ~20" from the object and reporting the error as if it had not,
+    which quietly spends two thirds of a 30" threshold.
+
+    No parallax is applied here and none is double-counted: a SkyCoord with no
+    distance is treated as infinitely far, so the GCRS transform contributes
+    aberration alone. Horizons already handled light-time and topocentric
+    parallax using the observer location it was given.
+    """
+    import astropy.units as u
+    from astropy.coordinates import GCRS, EarthLocation, SkyCoord
+    from astropy.time import Time
+
+    now = Time.now()
+    site = EarthLocation(
+        lat=observer_location["lat"] * u.deg,
+        lon=observer_location["lon"] * u.deg,
+        height=observer_location["elevation"] * 1000 * u.m,
+    )
+    # Observer velocity, so we pick up diurnal aberration (~0.3") as well.
+    pos, vel = site.get_gcrs_posvel(now)
+    apparent = SkyCoord(ra=ra_deg * u.deg, dec=dec_deg * u.deg, frame="icrs").transform_to(
+        GCRS(obstime=now, obsgeoloc=pos, obsgeovel=vel)
+    )
+    return float(apparent.ra.deg) % 360.0, float(apparent.dec.deg)
 
 
 def _resolve_horizons(target: str, observer_location: dict[str, float]) -> tuple[float, float, str]:
@@ -124,27 +161,69 @@ def _resolve_horizons(target: str, observer_location: dict[str, float]) -> tuple
         eph = obj.ephemerides()  # type: ignore[operator]
         ra = float(eph["RA"][0])
         dec = float(eph["DEC"][0])
-        log.info(f"Horizons resolved '{target}': RA={ra:.4f} Dec={dec:.4f}")
+        ra, dec = _apparent_place(ra, dec, observer_location)
+        log.info(f"Horizons resolved '{target}': RA={ra:.4f} Dec={dec:.4f} (apparent)")
         return ra, dec, "horizons"
 
     except Exception as exc:
         raise ValueError(f"JPL Horizons could not resolve '{target}': {exc}") from exc
 
 
-def _resolve_simbad(target: str) -> tuple[float, float, str]:
+def _apply_proper_motion(ra_deg: float, dec_deg: float, row) -> tuple[float, float]:
+    """Carry a J2000 catalog position forward to today, if Simbad gave us a PM.
+
+    Deep-sky objects have no proper motion and nearby stars have a lot of it;
+    both come back through the same path, so a missing or masked column is
+    normal and simply means "leave it where it is".
+    """
+    import astropy.units as u
+    import numpy as np
+    from astropy.coordinates import SkyCoord
+    from astropy.time import Time
+
+    try:
+        pm_ra = float(row["pmra"][0])
+        pm_dec = float(row["pmdec"][0])
+    except KeyError, TypeError, ValueError:
+        return ra_deg, dec_deg
+    if not (np.isfinite(pm_ra) and np.isfinite(pm_dec)) or (pm_ra == 0.0 and pm_dec == 0.0):
+        return ra_deg, dec_deg
+
+    moved = SkyCoord(
+        ra=ra_deg * u.deg,
+        dec=dec_deg * u.deg,
+        pm_ra_cosdec=pm_ra * u.mas / u.yr,  # Simbad's pmra already carries cos(dec)
+        pm_dec=pm_dec * u.mas / u.yr,
+        obstime=Time("J2000"),
+        frame="icrs",
+    ).apply_space_motion(new_obstime=Time.now())
+    return float(moved.ra.deg) % 360.0, float(moved.dec.deg)
+
+
+def _resolve_simbad(target: str, observer_location: dict[str, float]) -> tuple[float, float, str]:
     """Resolve via Simbad. Works for stars, nebulae, galaxies, clusters."""
     from astroquery.simbad import Simbad
 
     try:
-        result = Simbad.query_object(target)
+        query = Simbad()
+        # Simbad quotes positions at epoch J2000. Fast movers have gone a long
+        # way since: Vega's 350 mas/yr is 9" by 2026, a third of the threshold.
+        try:
+            query.add_votable_fields("pmra", "pmdec")
+        except Exception as exc:  # older astroquery, different field names
+            log.warning(f"Simbad proper-motion fields unavailable: {exc}")
+
+        result = query.query_object(target)
         if result is None:
             raise ValueError(f"Object '{target}' not found in Simbad catalog")
 
         # Simbad returns RA/Dec in degrees (lowercase column names)
         ra = float(result["ra"][0])
         dec = float(result["dec"][0])
+        ra, dec = _apply_proper_motion(ra, dec, result)
+        ra, dec = _apparent_place(ra, dec, observer_location)
 
-        log.info(f"Simbad resolved '{target}': RA={ra:.4f} Dec={dec:.4f}")
+        log.info(f"Simbad resolved '{target}': RA={ra:.4f} Dec={dec:.4f} (apparent)")
         return ra, dec, "simbad"
 
     except ValueError:

@@ -109,3 +109,62 @@ async def get_fov() -> float:
         resp.raise_for_status()
         data = resp.json()
         return float(data["view"]["fov"])
+
+
+# Stellarium measures simulation speed in Julian days per second.
+REAL_TIME_RATE = 1.0 / 86400.0
+
+
+async def get_time_rate() -> float:
+    """Current simulation speed in JD/s. 0 means the clock is paused."""
+    base = cfg.simulation.url
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        resp = await client.get(f"{base}/api/main/status")
+        resp.raise_for_status()
+        return float(resp.json()["time"]["timerate"])
+
+
+async def set_time_rate(rate: float) -> None:
+    """Set simulation speed. 0 freezes the sky, REAL_TIME_RATE resumes it."""
+    base = cfg.simulation.url
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        resp = await client.post(f"{base}/api/main/time", data={"timerate": rate})
+        if resp.status_code not in (200, 204):
+            raise RuntimeError(
+                f"Stellarium POST /api/main/time failed ({resp.status_code}): {resp.text[:200]}"
+            )
+    log.info(f"Stellarium time rate → {rate} JD/s")
+
+
+async def do_action(action_id: str) -> None:
+    """Trigger a Stellarium action -- the things bound to keyboard shortcuts.
+
+    Useful ones: actionReturn_To_Current_Time (jump the clock to now, though
+    it leaves the time rate alone), actionSet_Time_Rate_Zero.
+    """
+    base = cfg.simulation.url
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        resp = await client.post(f"{base}/api/stelaction/do", data={"id": action_id})
+        if resp.status_code not in (200, 204):
+            raise RuntimeError(
+                f"Stellarium action '{action_id}' failed ({resp.status_code}): {resp.text[:200]}"
+            )
+    log.info(f"Stellarium action → {action_id}")
+
+
+async def get_object_position(name: str) -> tuple[float, float] | None:
+    """Where Stellarium actually draws an object, as J2000 (RA, Dec) degrees.
+
+    Simulator ground truth -- only meaningful for checking our own work, never
+    as an input to the control loop. Returns None if Stellarium does not know
+    the object.
+    """
+    base = cfg.simulation.url
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        resp = await client.get(f"{base}/api/objects/info", params={"name": name, "format": "json"})
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        if "raJ2000" not in data or "decJ2000" not in data:
+            return None
+        return float(data["raJ2000"]) % 360.0, float(data["decJ2000"])
