@@ -8,8 +8,7 @@ docstring before calling it. The docstring carries all the instructions
 needed for Claude to classify the target and populate resolver + input_body
 correctly.
 
-LOCATION: unlike the earlier Celestia version, Claude never has to ask the
-user for coordinates. Observer location is resolved automatically via
+LOCATION: Observer location is resolved automatically via
 OpenStreetMap (see location_resolver.py):
     1. An explicit input_body["location"] (lon/lat), if the caller passes one.
     2. A free-text 'location_query' (e.g. "Srirampur, West Bengal, India"),
@@ -19,7 +18,7 @@ OpenStreetMap (see location_resolver.py):
 """
 
 import json
-from mcp.server.fastmcp import FastMCP
+from fastmcp import FastMCP
 
 import backend_client
 import location_resolver
