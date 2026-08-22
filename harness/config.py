@@ -21,6 +21,9 @@ class SimulationConfig:
         return f"http://{self.stellarium_host}:{self.stellarium_port}"
 
 
+_OBSERVER_ENV_VARS = ("CCE_OBSERVER_LON", "CCE_OBSERVER_LAT", "CCE_OBSERVER_ELEVATION_KM")
+
+
 @dataclass(frozen=True)
 class ObserverConfig:
     # Override via env vars for testing. In production, Agent sends these.
@@ -32,6 +35,12 @@ class ObserverConfig:
     )
     elevation_km: float = field(
         default_factory=lambda: float(os.getenv("CCE_OBSERVER_ELEVATION_KM", "0.093"))
+    )
+    # True when the operator named a location explicitly. Simulation mode
+    # adopts Stellarium's location on startup, but must never override a
+    # choice someone made on purpose.
+    explicitly_set: bool = field(
+        default_factory=lambda: any(os.getenv(v) is not None for v in _OBSERVER_ENV_VARS)
     )
 
     @property
@@ -102,3 +111,39 @@ class HarnessConfig:
 
 
 cfg = HarnessConfig()
+
+
+class RuntimeObserver:
+    """The observer location actually in use, which can change at startup.
+
+    Stellarium keeps its own location (often IP-geolocated, and often wrong).
+    If the harness and Stellarium disagree, `/objects/visible` reports
+    altitudes that contradict the sky on screen, and Moon parallax throws the
+    target off by several arcminutes -- 566" for a 1000 km disagreement,
+    against a 30" convergence threshold. Planets and stars are unaffected
+    (<1"), so this only bites the Moon and the visible-object listing.
+
+    Simulation mode therefore adopts Stellarium's location at startup unless
+    CCE_OBSERVER_* was set explicitly. Real hardware always uses config, or
+    whatever coordinates the agent passes per request.
+    """
+
+    def __init__(self, base: ObserverConfig) -> None:
+        self.latitude = base.latitude
+        self.longitude = base.longitude
+        self.elevation_km = base.elevation_km
+        self.source = "config"
+
+    def adopt(self, latitude: float, longitude: float, elevation_km: float, source: str) -> None:
+        self.latitude = latitude
+        self.longitude = longitude
+        self.elevation_km = elevation_km
+        self.source = source
+
+    @property
+    def location_dict(self) -> dict[str, float]:
+        """Format for JPL Horizons API."""
+        return {"lon": self.longitude, "lat": self.latitude, "elevation": self.elevation_km}
+
+
+observer = RuntimeObserver(cfg.observer)

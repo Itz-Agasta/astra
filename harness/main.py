@@ -25,9 +25,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
-from . import capture, catalog, motor, solver
+from . import capture, catalog, motor, solver, stellarium
 from .calibrator import abort_job, start_calibration
-from .config import cfg
+from .config import cfg, observer
 from .resolver import CATEGORIES, resolve
 from .state import store
 
@@ -84,6 +84,8 @@ async def lifespan(app: FastAPI):
             log.info("Stellarium connected, tracking disabled")
         except Exception as exc:
             log.warning(f"Could not disable Stellarium tracking: {exc}")
+
+        await _adopt_stellarium_location()
     else:
         log.warning(f"Stellarium not reachable at {cfg.simulation.url}")
 
@@ -273,10 +275,10 @@ async def get_status() -> dict:
 async def get_observer() -> dict:
     """get_observer_location() — where the harness thinks it is."""
     return {
-        "latitude": cfg.observer.latitude,
-        "longitude": cfg.observer.longitude,
-        "elevation_km": cfg.observer.elevation_km,
-        "source": "config",
+        "latitude": observer.latitude,
+        "longitude": observer.longitude,
+        "elevation_km": observer.elevation_km,
+        "source": observer.source,
     }
 
 
@@ -323,6 +325,16 @@ async def post_capture_raw() -> Response:
     """The current frame as a PNG — what the solver actually sees."""
     from PIL import Image
 
+    if cfg.solver.backend == "hint":
+        # Light mode never renders a frame, so there is nothing real to return.
+        # Better an explicit 503 than a 1x1 placeholder the dashboard would
+        # display as a black square and treat as a genuine capture.
+        raise HTTPException(
+            503,
+            "No frame available: solver backend is 'hint', which skips rendering. "
+            "Restart without CCE_SOLVER_BACKEND=hint to enable the frame preview.",
+        )
+
     try:
         image, _ = await capture.capture_frame()
     except Exception as exc:
@@ -361,6 +373,44 @@ async def post_motor_step(ra_deg: float, dec_deg: float) -> dict:
 
 
 #  Helpers
+
+
+async def _adopt_stellarium_location() -> None:
+    """Match the harness observer to Stellarium's, so the two agree.
+
+    Skipped when CCE_OBSERVER_* was set -- an explicit choice always wins.
+    """
+    if cfg.observer.explicitly_set:
+        log.info(
+            f"Observer pinned by CCE_OBSERVER_*: "
+            f"lat={observer.latitude:.4f} lon={observer.longitude:.4f}"
+        )
+        return
+    try:
+        lat, lon, elev_km = await stellarium.get_location()
+    except Exception as exc:
+        log.warning(f"Could not read Stellarium location, keeping config: {exc}")
+        return
+
+    moved_km = _rough_distance_km(observer.latitude, observer.longitude, lat, lon)
+    observer.adopt(lat, lon, elev_km, source="stellarium")
+    log.info(f"Observer adopted from Stellarium: lat={lat:.4f} lon={lon:.4f} elev={elev_km:.3f}km")
+    if moved_km > 50:
+        log.warning(
+            f"Stellarium's location is {moved_km:.0f} km from the configured default. "
+            "Using Stellarium's so /objects/visible matches the on-screen sky. "
+            "Set CCE_OBSERVER_LAT/LON to override."
+        )
+
+
+def _rough_distance_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle distance, good enough to decide whether to warn."""
+    import math
+
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp, dl = p2 - p1, math.radians(lon2 - lon1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 6371.0 * 2 * math.asin(min(1.0, math.sqrt(a)))
 
 
 async def _stellarium_reachable() -> bool:

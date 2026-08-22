@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 
-from .config import cfg
+from .config import observer
 
 log = logging.getLogger(__name__)
 
@@ -80,12 +80,10 @@ async def resolve(
     # For dev override with env vars CCE_OBSERVER_LON/LAT/ELEVATION_KM
     # In prod we expect Agent to send this info.
     observer_location = {
-        "lon": observer_lon if observer_lon is not None else cfg.observer.longitude,
-        "lat": observer_lat if observer_lat is not None else cfg.observer.latitude,
+        "lon": observer_lon if observer_lon is not None else observer.longitude,
+        "lat": observer_lat if observer_lat is not None else observer.latitude,
         "elevation": (
-            observer_elevation_km
-            if observer_elevation_km is not None
-            else cfg.observer.elevation_km
+            observer_elevation_km if observer_elevation_km is not None else observer.elevation_km
         ),
     }
 

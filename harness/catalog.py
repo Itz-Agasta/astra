@@ -128,13 +128,13 @@ def list_visible(
     from astropy.coordinates import AltAz, EarthLocation, SkyCoord, get_body
     from astropy.time import Time
 
-    from .config import cfg
+    from .config import observer
 
     _configure_astropy_offline()
 
-    lat = observer_lat if observer_lat is not None else cfg.observer.latitude
-    lon = observer_lon if observer_lon is not None else cfg.observer.longitude
-    elev = observer_elevation_km if observer_elevation_km is not None else cfg.observer.elevation_km
+    lat = observer_lat if observer_lat is not None else observer.latitude
+    lon = observer_lon if observer_lon is not None else observer.longitude
+    elev = observer_elevation_km if observer_elevation_km is not None else observer.elevation_km
 
     location = EarthLocation(lat=lat * u.deg, lon=lon * u.deg, height=elev * 1000 * u.m)
     now = Time.now()
