@@ -1,0 +1,32 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Tool caches
+.ruff_cache/
+.ty_cache/
+
+# Node / TypeScript
+node_modules/
+.next/
+*.tsbuildinfo
+next-env.d.ts
+
+# Turbo
+.turbo/
+
+# macOS
+.DS_Store
+
+*.log
+
+# IDEs
+.vscode/
+.zed/
