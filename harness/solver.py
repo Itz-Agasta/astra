@@ -117,7 +117,7 @@ def _solve_tetra3(image: np.ndarray) -> SolveResult:
 
 # Helpers
 def _normalise(image: np.ndarray) -> np.ndarray:
-    """Stretch to 0–255 uint8 for tetra3."""
+    """Stretch to 0-255 uint8 for tetra3."""
     img = image.astype(np.float32)
     lo, hi = np.percentile(img, [1, 99])
     if hi == lo:
