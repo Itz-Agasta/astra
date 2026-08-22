@@ -8,8 +8,9 @@ doesn't need to worry about runaway slew commands from Claude.
 """
 
 import json
-from fastmcp import FastMCP
+
 import backend_client
+from fastmcp import FastMCP
 
 # Maximum allowed offset per axis. Beyond this the mount could be damaged
 # or the target lost entirely — the backend trusts us to enforce this.

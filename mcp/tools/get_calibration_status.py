@@ -9,8 +9,9 @@ or 5 minutes elapse. The frontend can consume these logs line by line.
 """
 
 import time
-from fastmcp import FastMCP
+
 import backend_client
+from fastmcp import FastMCP
 
 POLL_INTERVAL = 1.5
 MAX_WATCH_SECONDS = 300  # 5 minutes
@@ -50,17 +51,19 @@ def register(mcp: FastMCP) -> None:
                 break
 
             iteration = result.get("iteration", "?")
-            error_arcsec = result.get("error_arcsec", "?")
+            # The harness reports the pointing error as total_error_arcsec
+            # (RA/Dec components in error_ra_arcsec / error_dec_arcsec).
+            error_arcsec = result.get("total_error_arcsec", result.get("error_arcsec", "?"))
             status = result.get("status", "unknown")
+            message = result.get("message", "")
 
             timestamp = time.strftime("%H:%M:%S")
-            logs.append(
-                f"[{timestamp}]  iteration={iteration}  "
-                f"error={error_arcsec}\"  "
-                f"status={status}"
-            )
+            line = f'[{timestamp}]  iteration={iteration}  error={error_arcsec}"  status={status}'
+            if message:
+                line += f"  |  {message}"
+            logs.append(line)
 
-            if status in ("completed", "aborted", "failed", "done"):
+            if status in ("done", "failed", "aborted"):
                 logs.append(f"\n[watch] Job {job_id} ended with status: {status}")
                 break
 

@@ -7,8 +7,9 @@ Useful when calibration is taking too long or the user wants to stop it.
 """
 
 import json
-from fastmcp import FastMCP
+
 import backend_client
+from fastmcp import FastMCP
 
 
 def register(mcp: FastMCP) -> None:

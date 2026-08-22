@@ -17,10 +17,10 @@ OpenStreetMap (see location_resolver.py):
 """
 
 import json
-from fastmcp import FastMCP
 
 import backend_client
 import location_resolver
+from fastmcp import FastMCP
 
 
 def register(mcp: FastMCP) -> None:
@@ -42,13 +42,13 @@ def register(mcp: FastMCP) -> None:
 
         OBSERVER LOCATION — HANDLED AUTOMATICALLY
         ───────────────────────────────────────────
-        You do NOT need to ask the user for their location. The server
-        resolves it itself via OpenStreetMap, in this order:
+        You do NOT need to ask the user for their location. In this order:
           1. If input_body["location"] already has lon/lat, that is used as-is.
           2. Else, if you pass 'location_query' (a place name, e.g. "Kolkata,
-             India"), it is geocoded automatically (Nominatim + OpenTopoData
-             for elevation).
-          3. If neither is provided, the tool returns an error — location is mandatory.
+             India"), it is geocoded automatically (Nominatim + OpenTopoData).
+          3. If neither is provided, the harness uses its own configured
+             site (in simulation mode: Stellarium's location). This is the
+             normal case — omit location entirely.
 
         Only pass 'location_query' if the user explicitly mentions observing
         from somewhere other than the telescope's usual site.
@@ -74,8 +74,7 @@ def register(mcp: FastMCP) -> None:
             "id_type": "majorbody"
           }
           Use id_type "smallbody" for asteroids and comets.
-          Omit "location" entirely — it is filled in automatically. Only
-          include it if you already have explicit lon/lat/elevation.
+          Omit "location" entirely unless you have explicit lon/lat/elevation.
 
         For resolver = "simbad" (deep sky objects):
           {
@@ -87,11 +86,13 @@ def register(mcp: FastMCP) -> None:
         EXAMPLES
         ─────────
         Default site (most common case):
-          "Jupiter" → resolver="horizons", input_body={"id":"Jupiter","epochs":"Time.now().jd","id_type":"majorbody"}
+          "Jupiter" → resolver="horizons",
+                      input_body={"id":"Jupiter","epochs":"Time.now().jd","id_type":"majorbody"}
 
         User observing from elsewhere:
           "Jupiter", location_query="London, UK"
-            → resolver="horizons", input_body={"id":"Jupiter","epochs":"Time.now().jd","id_type":"majorbody"}
+            → resolver="horizons",
+              input_body={"id":"Jupiter","epochs":"Time.now().jd","id_type":"majorbody"}
             → location auto-resolved from "London, UK" via OpenStreetMap
 
         Any location (deep sky):
@@ -124,7 +125,15 @@ def register(mcp: FastMCP) -> None:
 
         input_body = dict(input_body)  # avoid mutating caller's dict
 
-        if resolver == "horizons":
+        # Location is optional: with no query and no explicit coordinates the
+        # harness falls back to its own configured site (Stellarium's in
+        # simulation mode). Resolve only when the caller gave us something.
+        has_explicit_location = (
+            isinstance(input_body.get("location"), dict)
+            and "lon" in input_body["location"]
+            and "lat" in input_body["location"]
+        )
+        if resolver == "horizons" and (location_query or has_explicit_location):
             try:
                 location = location_resolver.resolve_location(
                     location_query=location_query,
@@ -136,15 +145,14 @@ def register(mcp: FastMCP) -> None:
             input_body["location"] = {
                 "lon": location["lon"],
                 "lat": location["lat"],
-                "elevation": location["elevation"],
+                "elevation": location.get("elevation", 0.0),
             }
 
-            if "id_type" not in input_body:
-                input_body["id_type"] = "majorbody"
+        if resolver == "horizons" and "id_type" not in input_body:
+            input_body["id_type"] = "majorbody"
 
-        elif resolver == "simbad":
-            if "name" not in input_body:
-                return "Error: input_body must contain 'name' for resolver='simbad'."
+        if resolver == "simbad" and "name" not in input_body:
+            return "Error: input_body must contain 'name' for resolver='simbad'."
 
         try:
             result = backend_client.point_to(

@@ -12,7 +12,6 @@ Priority order when a tool needs a location:
        which gets geocoded via Nominatim.
 """
 
-import os
 import time
 from typing import Any
 
@@ -111,7 +110,9 @@ def get_elevation(lat: float, lon: float) -> float:
     return elevation_km
 
 
-def resolve_location(location_query: str | None = None, explicit_location: dict | None = None) -> dict:
+def resolve_location(
+    location_query: str | None = None, explicit_location: dict | None = None
+) -> dict:
     """
     Resolve the observer's location with no back-and-forth with Claude/the user.
 

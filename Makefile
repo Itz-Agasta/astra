@@ -1,4 +1,4 @@
-.PHONY: sync lint format typecheck check run-harness run-mcp dev-client clean
+.PHONY: sync lint format typecheck typecheck-py typecheck-web check run-harness run-mcp dev-client clean
 
 sync:
 	uv sync --all-packages
