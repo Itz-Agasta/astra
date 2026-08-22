@@ -52,7 +52,9 @@ async def start_calibration(
     store.add_job(job)
     store.status.active_job = job_id
 
-    asyncio.create_task(_calibration_loop(job_id))
+    task = asyncio.create_task(_calibration_loop(job_id))
+    store.register_task(job_id, task)
+    await store.broadcast_job(job, event="calibration_started")
     log.info(f"Calibration job {job_id} started for '{target}'")
     return job_id
 
@@ -63,6 +65,7 @@ async def abort_job(job_id: str) -> bool:
     if not job or job.status != "running":
         return False
     store.update_job(job_id, status="aborted", message="Aborted by user")
+    store.cancel_task(job_id)  # stop mid-slew, not just at the next status check
     await halt()
     await store.broadcast_job(job)
     return True
@@ -86,7 +89,7 @@ async def _calibration_loop(job_id: str) -> None:
     for iteration in range(1, max_iter + 1):
         #  Abort check
         job = store.get_job(job_id)
-        if job.status in ("aborted", "failed"):
+        if job is None or job.status in ("aborted", "failed"):
             return
 
         store.update_job(
@@ -101,10 +104,14 @@ async def _calibration_loop(job_id: str) -> None:
             fail_count += 1
             log.warning(f"Capture failed ({fail_count}/{max_fails}): {exc}")
             if fail_count >= max_fails:
-                await _fail(
-                    job_id, "plate_solve_timeout", f"Camera failed {max_fails} times: {exc}"
-                )
+                await _fail(job_id, "capture_failed", f"Camera failed {max_fails} times: {exc}")
                 return
+            store.update_job(
+                job_id,
+                message=f"Iteration {iteration} — capture failed "
+                f"({fail_count}/{max_fails}), retrying: {exc}",
+            )
+            await store.broadcast_job(job)
             await asyncio.sleep(1.0)
             continue
 
@@ -114,20 +121,35 @@ async def _calibration_loop(job_id: str) -> None:
             store.status.solver_ready = True
             current_ra = result.ra
             current_dec = result.dec
+            store.update_job(
+                job_id,
+                solver_backend=result.backend,
+                solver_residual_arcsec=result.residual_arcsec,
+                stars_matched=result.stars_matched,
+                solve_time_ms=result.solve_time_ms,
+            )
             fail_count = 0  # reset on success
         except Exception as exc:
             fail_count += 1
             log.warning(f"Solve failed ({fail_count}/{max_fails}): {exc}")
             if fail_count >= max_fails:
                 await _fail(
-                    job_id, "plate_solve_timeout", f"Plate solver failed {max_fails} times: {exc}"
+                    job_id, "plate_solve_failed", f"Plate solver failed {max_fails} times: {exc}"
                 )
                 return
+            store.update_job(
+                job_id,
+                message=f"Iteration {iteration} — solve failed "
+                f"({fail_count}/{max_fails}), retrying: {exc}",
+            )
+            await store.broadcast_job(job)
             await asyncio.sleep(1.0)
             continue
 
         #  3. Compute offset
         job = store.get_job(job_id)
+        if job is None:
+            return
         delta_ra = job.target_ra - current_ra
         delta_dec = job.target_dec - current_dec
 
@@ -150,6 +172,18 @@ async def _calibration_loop(job_id: str) -> None:
             error_dec_arcsec=round(error_dec_arcsec, 2),
             total_error_arcsec=round(total_error, 2),
             message=f'Iteration {iteration} — error {total_error:.1f}" — converging',
+        )
+
+        # One row per iteration — this is what the dashboard graphs.
+        job.history.append(
+            {
+                "iteration": iteration,
+                "error_arcsec": round(total_error, 2),
+                "ra": round(current_ra, 6),
+                "dec": round(current_dec, 6),
+                "solver_residual_arcsec": result.residual_arcsec,
+                "elapsed_seconds": job.elapsed_seconds,
+            }
         )
 
         await store.broadcast_job(job)

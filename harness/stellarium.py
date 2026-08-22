@@ -84,6 +84,23 @@ async def get_view() -> tuple[float, float]:
         return ra_deg, dec_deg
 
 
+async def get_location() -> tuple[float, float, float]:
+    """Stellarium's own observer location as (latitude, longitude, elevation_km).
+
+    Stellarium reports altitude in metres; everything here works in km.
+    """
+    base = cfg.simulation.url
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        resp = await client.get(f"{base}/api/main/status")
+        resp.raise_for_status()
+        loc = resp.json()["location"]
+        return (
+            float(loc["latitude"]),
+            float(loc["longitude"]),
+            float(loc.get("altitude", 0.0)) / 1000.0,
+        )
+
+
 async def get_fov() -> float:
     """Get current Stellarium field of view in degrees."""
     base = cfg.simulation.url

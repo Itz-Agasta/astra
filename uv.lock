@@ -85,6 +85,8 @@ dependencies = [
     { name = "httpx" },
     { name = "numpy" },
     { name = "tetra3" },
+    { name = "uvicorn" },
+    { name = "websockets" },
 ]
 
 [package.metadata]
@@ -95,6 +97,8 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "numpy", specifier = ">=2.5.2" },
     { name = "tetra3", git = "https://github.com/esa/tetra3.git" },
+    { name = "uvicorn", specifier = ">=0.52.4" },
+    { name = "websockets", specifier = ">=17.0.1" },
 ]
 
 [[package]]
