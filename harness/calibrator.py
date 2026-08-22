@@ -76,29 +76,28 @@ async def abort_job(job_id: str) -> bool:
 
 
 async def _freeze_sky() -> float | None:
-    """Pause Stellarium's clock for the duration of a run.
+    """Pause Stellarium's clock and confirm it stuck.
 
-    We resolve the target once, then spend several iterations driving the
-    mount to those fixed coordinates. With the clock running, the object walks
-    away from them underneath us -- the Moon moves ~0.9"/s (about 19" over a
-    20s run, mostly topocentric parallax as the Earth turns) against a 30"
-    convergence threshold, so a live sky alone can hold the loop above its
-    target. Planets manage ~0.03"/s and stars none at all, but freezing costs
-    nothing and makes the target genuinely stationary for every category.
-
-    Returns the previous rate so it can be handed back, or None if we could
-    not read it. Never fatal: a moving sky degrades accuracy, it does not
-    break the loop.
+    A single POST can lose a race with a previous restore still in flight
+    (same issue demo.py's hold_sky documents). Retry until timerate reads 0.
     """
     if not cfg.simulation.enabled:
         return None
+    previous: float | None = None
     try:
         previous = await stellarium.get_time_rate()
-        await stellarium.set_time_rate(0.0)
     except Exception as exc:
-        log.warning(f"Could not pause Stellarium's clock, sky keeps moving: {exc}")
-        return None
-    log.info(f"Stellarium clock paused (was {previous} JD/s)")
+        log.warning(f"Could not read Stellarium time rate: {exc}")
+    for attempt in range(4):
+        try:
+            await stellarium.set_time_rate(0.0)
+            if await stellarium.get_time_rate() == 0.0:
+                log.info(f"Stellarium clock paused (was {previous} JD/s)")
+                return previous
+        except Exception as exc:
+            log.warning(f"Could not pause Stellarium's clock (try {attempt + 1}): {exc}")
+        await asyncio.sleep(0.25 * (attempt + 1))
+    log.warning("Stellarium clock did not stay at 0 — sky may keep moving")
     return previous
 
 
@@ -114,17 +113,28 @@ async def _thaw_sky(previous: float | None) -> None:
 
 #  Core loop
 
+# Wider than the showcase zoom, narrow enough that the target is visible.
+_SEARCH_FOV_DEG = 20.0
 
 async def _calibration_loop(job_id: str) -> None:
-    """Freeze the sky, run the loop, and always give the clock back."""
+    """Freeze the sky, run the loop, keep it frozen on lock."""
+    # A previous locked run leaves the sky frozen and the FOV at showcase
+    # level.  Undo both before the new loop starts — same as demo.py's park().
+    if cfg.simulation.enabled:
+        try:
+            await stellarium.zoom(_SEARCH_FOV_DEG)
+        except Exception as exc:
+            log.warning(f"Could not reset FOV from previous run: {exc}")
     previous_rate = await _freeze_sky()
     try:
         await _run_calibration(job_id)
     finally:
-        # Safe to await even when we land here because the task was cancelled:
-        # Task.cancel() delivers CancelledError once, so this await is not
-        # itself cancelled and the user never gets left with a frozen sim.
-        await _thaw_sky(previous_rate)
+        # On a successful lock the showcase zoom is already done and we want
+        # the sky to stay frozen so the target holds its position at high
+        # magnification.  Only resume the clock on abort / failure / crash.
+        job = store.get_job(job_id)
+        if job is None or job.status != "done":
+            await _thaw_sky(previous_rate)
 
 
 async def _run_calibration(job_id: str) -> None:
@@ -266,6 +276,7 @@ async def _run_calibration(job_id: str) -> None:
             )
             await store.broadcast_job(job)
             log.info(f'[{job_id}] LOCKED — {total_error:.1f}" after {iteration} iterations')
+            await _showcase_zoom(job.target, job.source, total_error)
             return
 
         # 5. Apply damped correction  ra' = ra + k·ΔRA
@@ -349,6 +360,42 @@ async def _final_correction(
     )
     log.info(f'[{job_id}] final correction: {total_error:.1f}" -> {refined:.1f}"')
     return refined
+
+
+_SHOWCASE_FOV = {
+    "horizons": 0.02,
+    "simbad": 1.50,
+    "planet": 0.02,
+    "deep_sky": 1.50,
+    "star": 0.20,
+}
+_SHOWCASE_BY_NAME = {"moon": 1.0, "sun": 1.0}
+_SHOWCASE_MARGIN = 6.0
+_ZOOM_STEPS = 30
+_ZOOM_STEP_S = 0.06
+
+
+async def _showcase_zoom(target: str, source: str, error_arcsec: float) -> None:
+    """Cosmetic FOV walk after lock — same numbers as demo.py. Never fails the job."""
+    if not cfg.simulation.enabled:
+        return
+    fov = _SHOWCASE_BY_NAME.get(target.lower(), _SHOWCASE_FOV.get(source, 0.50))
+    if error_arcsec > 0:
+        fov = max(fov, error_arcsec / 3600 * _SHOWCASE_MARGIN)
+    try:
+        start = await stellarium.get_fov()
+        if fov >= start:
+            await stellarium.zoom(fov)
+            return
+        ratio = (fov / start) ** (1 / _ZOOM_STEPS)
+        current = start
+        for _ in range(_ZOOM_STEPS):
+            current *= ratio
+            await stellarium.zoom(current)
+            await asyncio.sleep(_ZOOM_STEP_S)
+        await stellarium.zoom(fov)
+    except Exception as exc:
+        log.warning(f"showcase zoom failed: {exc}")
 
 
 async def _fail(job_id: str, reason: str, message: str) -> None:
