@@ -25,7 +25,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
-from . import capture, catalog, motor, solver, stellarium
+
+from . import capture, catalog, motor, solver, stellarium, esp32
 from .calibrator import abort_job, start_calibration
 from .config import cfg, observer
 from .resolver import CATEGORIES, resolve
@@ -89,7 +90,19 @@ async def lifespan(app: FastAPI):
     else:
         log.warning(f"Stellarium not reachable at {cfg.simulation.url}")
 
+    if cfg.simulation.enabled:
+        try:
+            await esp32.connect()
+            log.info("ESP32 connected -- mock mount will move alongside Stellarium")
+        except Exception as exc:
+            log.warning(
+                f"Could not connect to ESP32 on {cfg.esp32.port}: {exc}. "
+                "Stellarium will still move; the physical model will not."
+            )
+
     yield
+    if cfg.simulation.enabled:
+        await esp32.disconnect()
     log.info("Astra harness shutting down")
 
 
