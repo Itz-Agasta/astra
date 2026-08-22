@@ -149,7 +149,7 @@ async def preflight(client: httpx.AsyncClient) -> bool:
         return False
 
     obs = (await client.get(f"{BASE}/observer")).json()
-    print(f"    observer:   lat={obs['latitude']:.4f} lon={obs['longitude']:.4f}")
+    print (f"   observer: lat={obs['latitude']:.4f} lon={obs['longitude']:.4f}") 
 
     # Stellarium holds ~1.1 GB and is the fattest process on the box, so it is
     # what an OOM killer reaches for first. Warn before we make things worse.

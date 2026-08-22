@@ -8,8 +8,9 @@ using the telescope's configured observer location.
 """
 
 import json
-from fastmcp import FastMCP
+
 import backend_client
+from fastmcp import FastMCP
 
 
 def register(mcp: FastMCP) -> None:
