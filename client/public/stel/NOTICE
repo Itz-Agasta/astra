@@ -1,0 +1,7 @@
+
+NOTICE
+Stellarium Web Engine (stellarium-web-engine.js / .wasm) is licensed under
+GNU AGPL v3.0 (see LICENSE-AGPL-3.0.txt).
+Source: https://github.com/Stellarium/stellarium-web-engine
+Skydata subset vendored from a public SWE test tree (stars/minimal+base,
+western skyculture, milkyway, SSO).

@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ASTRA</title>
+    <link rel="icon" href="/favicon.ico" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:ital,wght@0,100..900;1,100..900&display=swap" rel="stylesheet">
+    <script src="/stel/stellarium-web-engine.js"></script>
+  </head>
+  <body>
+    <canvas id="stel-canvas"></canvas>
+    <div id="hud" class="hud">
+      <!-- Floating Calibration Console -->
+      <div class="calibration-console">
+        <div class="console-header">
+          <span class="console-title">Calibration Control HUD</span>
+          <span id="status-indicator" class="status-indicator">STANDBY</span>
+        </div>
+        
+        <div class="console-body">
+          <!-- Target & Connection Info -->
+          <div class="info-section">
+            <div class="info-row"><span>Stellarium Status:</span><span id="stel-status" class="value">Checking...</span></div>
+            <div class="info-row"><span>Target Object:</span><span id="target-object" class="value">Jupiter</span></div>
+            <div class="info-row"><span>Target Coordinates:</span><span id="target-coords" class="value">RA=116.55° Dec=21.62°</span></div>
+            <div class="info-row"><span>J2000 Vector:</span><span id="j2000-vector" class="value">—</span></div>
+          </div>
+          
+          <!-- Start Button -->
+          <button type="button" id="btn-calibrate" class="btn-calibrate">Run Calibration</button>
+          
+          <!-- Iteration Log List -->
+          <div class="log-section">
+            <div class="log-header">Calibration Feed (cal_ccbab9)</div>
+            <div id="log-feed" class="log-feed">
+              <div class="log-placeholder">Click 'Run Calibration' to begin.</div>
+            </div>
+          </div>
+
+          <!-- Final Convergence Info -->
+          <div id="convergence-panel" class="convergence-panel" hidden>
+            <div class="conv-title">✓ CONVERGED</div>
+            <div class="conv-row"><span>Iterations:</span><span>6</span></div>
+            <div class="conv-row"><span>Final Error:</span><span>15.7"</span></div>
+            <div class="conv-message">Locked on Jupiter. Final error 15.7"</div>
+          </div>
+
+          <!-- Status Bar inside console -->
+          <div id="status" class="status">
+            <span id="status-link">connecting</span>
+            <span id="status-loc"></span>
+            <span id="status-fov"></span>
+            <span id="status-fps"></span>
+            <span id="status-time"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Selection Pointer Overlay -->
+      <div id="sel-pointer" class="sel-pointer" hidden aria-hidden="true">
+        <span class="n"></span>
+        <span class="e"></span>
+        <span class="s"></span>
+        <span class="w"></span>
+      </div>
+
+      <!-- Offline Overlay -->
+      <div id="offline" class="offline" hidden>
+        <div class="offline-box">
+          <h2>Stellarium Unreachable</h2>
+          <p>The desktop app must be running with the Remote Control plugin enabled on port 8090.</p>
+          <button type="button" id="retry">Retry</button>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
