@@ -13,8 +13,7 @@ OpenStreetMap (see location_resolver.py):
     1. An explicit input_body["location"] (lon/lat), if the caller passes one.
     2. A free-text 'location_query' (e.g. "Srirampur, West Bengal, India"),
        geocoded through Nominatim + elevation via OpenTopoData.
-    3. The telescope's configured DEFAULT_LOCATION (env vars) — used
-       automatically when neither of the above is given.
+    3. If neither is provided, the tool returns an error — location is mandatory.
 """
 
 import json
@@ -49,9 +48,7 @@ def register(mcp: FastMCP) -> None:
           2. Else, if you pass 'location_query' (a place name, e.g. "Kolkata,
              India"), it is geocoded automatically (Nominatim + OpenTopoData
              for elevation).
-          3. Else, the telescope's configured default site location is used
-             automatically — this covers the normal case of a fixed,
-             permanently-mounted telescope. Just omit location entirely.
+          3. If neither is provided, the tool returns an error — location is mandatory.
 
         Only pass 'location_query' if the user explicitly mentions observing
         from somewhere other than the telescope's usual site.

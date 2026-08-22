@@ -10,8 +10,6 @@ Priority order when a tool needs a location:
        (kept for backwards-compat / manual overrides).
     2. A free-text `location_query` (e.g. "Srirampur, West Bengal, India")
        which gets geocoded via Nominatim.
-    3. DEFAULT_LOCATION (set via env vars) — the telescope's fixed home
-       location, so most calls need no location argument at all.
 """
 
 import os
@@ -120,11 +118,6 @@ def resolve_location(location_query: str | None = None, explicit_location: dict 
     Resolution order:
         1. explicit_location (already has lon/lat) — used as-is.
         2. location_query — geocoded via Nominatim, elevation via OpenTopoData.
-        3. DEFAULT_LOCATION — the telescope's configured home coordinates
-           (DEFAULT_LATITUDE / DEFAULT_LONGITUDE / DEFAULT_ELEVATION_KM env vars).
-
-    Raises ValueError only if none of the above are available — this should
-    be rare once DEFAULT_LOCATION is configured for a fixed installation.
     """
     if explicit_location and "lon" in explicit_location and "lat" in explicit_location:
         return {
@@ -146,10 +139,7 @@ def resolve_location(location_query: str | None = None, explicit_location: dict 
             "country": geo["country"],
         }
 
-    if DEFAULT_LOCATION:
-        return dict(DEFAULT_LOCATION)
-
     raise ValueError(
-        "No observer location available. Set DEFAULT_LATITUDE/DEFAULT_LONGITUDE "
-        "in .env for a fixed site, or pass 'location_query' with a place name."
+        "Observer location required: provide 'location_query' (place name, e.g. 'Kolkata, India') "
+        "or input_body['location'] with explicit lon/lat/elevation"
     )

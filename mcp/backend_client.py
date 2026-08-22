@@ -68,3 +68,21 @@ def point_to(target: str, resolver: str, input_body: dict) -> dict:
         except httpx.TimeoutException:
             raise RuntimeError("Backend request timed out")
     return _handle_response(resp)
+
+def manual_slew(dra_arcsec: float, ddec_arcsec: float) -> dict:
+    """
+    Send a relative slew command to the mount.
+    Argument validation (max 3600 arcsec) is done by the tool layer before
+    this method is called, so we just forward cleanly.
+    """
+    with _client() as client:
+        try:
+            resp = client.post(
+                "/manual-slew",
+                json={"dra_arcsec": dra_arcsec, "ddec_arcsec": ddec_arcsec},
+            )
+        except httpx.ConnectError:
+            raise RuntimeError(f"Cannot reach backend at {BACKEND_BASE_URL}")
+        except httpx.TimeoutException:
+            raise RuntimeError("Backend request timed out")
+    return _handle_response(resp)
