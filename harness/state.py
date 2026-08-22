@@ -68,6 +68,7 @@ class StateStore:
     def __init__(self):
         self.jobs: dict[str, CalibrationJob] = {}
         self.status: SystemStatus = SystemStatus()
+        self.last_mcp_call: dict | None = None
         self._ws_clients: set[WebSocket] = set()
         self._lock = asyncio.Lock()
         # Strong refs to running loop tasks. asyncio only holds weak refs, so
