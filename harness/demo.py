@@ -13,7 +13,8 @@ passes, the MCP side is just thin wrappers over these same calls.
     uv run python -m harness.demo Saturn planet
 
 Point Stellarium at your second monitor and watch the view jump to the park
-position, then walk in to the target over ~8 iterations.
+position, walk in to the target over ~8 iterations, then zoom right down onto
+it once the loop reports a lock.
 
 MEMORY: the default tetra3 backend needs ~320 MB, and Stellarium itself holds
 ~1.1 GB. On a machine with little free RAM an OOM killer (earlyoom, systemd-oomd)
@@ -31,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import sys
 
@@ -52,6 +54,36 @@ PARK_RA, PARK_DEC = 300.0, -40.0
 # the MCP surface -- the demo calls Stellarium directly for it.
 DEMO_FOV_DEG = 20.0
 
+# Once we are locked on, zoom down onto the target the way you would swap in a
+# high-power eyepiece. Values are display choices: tight enough that the object
+# fills a useful part of the frame, wide enough that it still reads as a disk
+# and not a wall of pixels.
+SHOWCASE_FOV_DEG = {
+    "planet": 0.02,  # Jupiter's disk is ~40" -- roughly half the frame
+    "star": 0.20,  # a point source; tighter just makes a bigger blob
+    "deep_sky": 1.50,  # M42 is ~1 deg across
+    "comet": 0.50,
+    "asteroid": 0.20,
+}
+SHOWCASE_FOV_DEFAULT = 0.50
+# The Moon and Sun are half a degree wide -- nothing like the point-like planets.
+SHOWCASE_FOV_BY_NAME = {"moon": 1.0, "sun": 1.0}
+
+# Never zoom past the point where the loop's own pointing residual would push
+# the target out of frame: hold the field at >= 6x the worst-case error.
+#
+# Worst case is not the reported error. The loop stops when its *plate-solved
+# estimate* of the error drops below the threshold, and that estimate carries
+# the solver's own residual -- so a run reporting 25" can sit 38" off the mark.
+# Budget for error + residual or the zoom lands tighter than the pointing
+# actually justifies.
+SHOWCASE_ERROR_MARGIN = 6.0
+
+# Stellarium's REST zoom is a jump cut. Walking it down in steps is what makes
+# it read as a zoom rather than a scene change.
+ZOOM_STEPS = 30
+ZOOM_STEP_DELAY_S = 0.06
+
 BAR_WIDTH = 34
 DIM, BOLD, GREEN, RED, YELLOW, CYAN, RESET = (
     "\033[2m",
@@ -72,8 +104,6 @@ def rule(title: str = "") -> None:
 
 def error_bar(err: float, first: float) -> str:
     """Log-scale bar — error spans ~5 orders of magnitude over a run."""
-    import math
-
     if first <= 0 or err <= 0:
         return ""
     frac = math.log10(max(err, 1e-6)) / math.log10(max(first, 10))
@@ -151,6 +181,15 @@ async def show_sky(client: httpx.AsyncClient) -> None:
 
 async def park(client: httpx.AsyncClient) -> None:
     rule("3 · Parking the view somewhere obviously wrong")
+    try:
+        # The previous run ends with the clock frozen so the target holds
+        # still. Undo that here, or stage 2's altitudes drift away from what
+        # is actually drawn on screen.
+        await stellarium.do_action("actionReturn_To_Current_Time")
+        await stellarium.set_time_rate(stellarium.REAL_TIME_RATE)
+        print(f"  {DIM}sky resumed at real time{RESET}")
+    except Exception as exc:
+        print(f"  {DIM}(could not resume the clock: {exc}){RESET}")
     try:
         await stellarium.zoom(DEMO_FOV_DEG)
         print(f"  {DIM}zoomed Stellarium to {DEMO_FOV_DEG:.0f}° so the target is visible{RESET}")
@@ -234,12 +273,141 @@ async def calibrate(client: httpx.AsyncClient, target: str, category: str) -> bo
         else:
             print(f"    solver:          {final['solver_backend']} — no plate solve performed")
         print(f"\n  {CYAN}Stellarium is now centred on {target}.{RESET}")
+        await showcase(target, category, final)
         return True
 
     print(f"  {RED}✗ {final['status'].upper()}{RESET} after {final['iteration']} iterations")
     print(f"    reason:  {final['reason']}")
     print(f"    message: {final['message']}")
     return False
+
+
+def angular_sep(a: tuple[float, float], b: tuple[float, float]) -> float:
+    """Separation between two (RA, Dec) pairs, in arcseconds."""
+    d_ra = (b[0] - a[0] + 180) % 360 - 180
+    return math.hypot(d_ra * math.cos(math.radians(a[1])), b[1] - a[1]) * 3600
+
+
+async def true_offset(target: str) -> float | None:
+    """How far the boresight really is from the target, per the simulator.
+
+    The harness only ever sees the plate solver's opinion, and after the final
+    correction that opinion is dominated by the solver's own residual -- it
+    reports ~18" while sitting half an arcsecond off. Stellarium knows where it
+    actually drew the object, so ask it. Demo-only: this is the answer sheet,
+    and nothing in the control loop is allowed to read it.
+    """
+    try:
+        drawn = await stellarium.get_object_position(target)
+        if drawn is None:
+            return None
+        return angular_sep(await stellarium.get_view(), drawn)
+    except Exception:
+        return None
+
+
+def worst_case_error(final: dict) -> float | None:
+    """Upper bound on how far off we are, going only on what the loop can see."""
+    err = final.get("total_error_arcsec")
+    if err is None:
+        return None
+    return err + (final.get("solver_residual_arcsec") or 0.0)
+
+
+def showcase_fov(target: str, category: str, worst_arcsec: float | None) -> float:
+    """How far to zoom in, given what we are looking at and how well we hit it."""
+    fov = SHOWCASE_FOV_BY_NAME.get(
+        target.lower(), SHOWCASE_FOV_DEG.get(category, SHOWCASE_FOV_DEFAULT)
+    )
+    if worst_arcsec:
+        fov = max(fov, worst_arcsec / 3600 * SHOWCASE_ERROR_MARGIN)
+    return fov
+
+
+async def zoom_to(target_fov: float, steps: int = ZOOM_STEPS) -> None:
+    """Ease the field of view down to target_fov over ~2s."""
+    try:
+        start = await stellarium.get_fov()
+    except Exception:
+        start = DEMO_FOV_DEG
+
+    if target_fov >= start:
+        await stellarium.zoom(target_fov)
+        return
+
+    # Geometric, not linear: the field spans three orders of magnitude, and
+    # equal *ratios* per step are what feel like a constant zoom rate.
+    ratio = (target_fov / start) ** (1 / steps)
+    fov = start
+    for _ in range(steps):
+        fov *= ratio
+        await stellarium.zoom(fov)
+        await asyncio.sleep(ZOOM_STEP_DELAY_S)
+    await stellarium.zoom(target_fov)
+
+
+async def hold_sky(attempts: int = 4) -> bool:
+    """Freeze the clock and make it stick.
+
+    The calibrator hands the clock back the instant its loop exits, and that
+    restore is still in flight while we get here -- we are racing it. Losing
+    the race leaves the sky running and the target visibly creeping away under
+    the zoom, so set the rate and read it back until it holds.
+    """
+    for attempt in range(attempts):
+        try:
+            await stellarium.set_time_rate(0.0)
+            if await stellarium.get_time_rate() == 0.0:
+                return True
+        except Exception:
+            pass
+        await asyncio.sleep(0.25 * (attempt + 1))
+    return False
+
+
+async def showcase(target: str, category: str, final: dict) -> None:
+    rule(f"6 \u00b7 Zooming in on {target}")
+    # Prefer the measured offset: the solver's estimate is floored by its own
+    # residual and would hold the zoom ~40x wider than the pointing warrants.
+    measured = await true_offset(target)
+    worst = worst_case_error(final)
+    fov = showcase_fov(target, category, measured if measured is not None else worst)
+
+    # Freeze first, then zoom. At this magnification a live sky visibly walks
+    # the target off centre while anyone is still looking at it -- the Moon at
+    # ~0.9"/s crosses its own width in ten minutes -- and freezing before the
+    # zoom also means the framing we settle on is the framing that stays.
+    held = await hold_sky()
+    if not held:
+        print(f"  {DIM}(could not hold the sky still){RESET}")
+
+    print(f"  {CYAN}\u2192 watch Stellarium zoom{RESET}")
+    try:
+        await zoom_to(fov)
+    except Exception as exc:
+        print(f"  {DIM}(could not zoom: {exc}){RESET}")
+        return
+
+    print(f"  FOV {fov:.3f}\u00b0 \u2014 {DEMO_FOV_DEG / fov:.0f}x tighter than the search field")
+    if measured is not None:
+        print(
+            f'    {target} is {measured:.1f}" off centre '
+            f"= {measured / 3600 / fov * 100:.1f}% of the field width"
+        )
+        est = final["total_error_arcsec"]
+        resid = final.get("solver_residual_arcsec") or 0
+        print(
+            f'    {DIM}the loop only knows the solver estimate, {est:.0f}"; its residual '
+            f"alone is {resid:.0f}\", so it has hit the solver's noise floor{RESET}"
+        )
+    elif worst:
+        print(f'    pointing is within {worst:.0f}" = {worst / 3600 / fov * 100:.0f}% of the field')
+    if held:
+        print(f"  {GREEN}\u2713{RESET} sky frozen \u2014 {target} will stay exactly where it is")
+    print(
+        f"  {DIM}the next run resets the zoom to {DEMO_FOV_DEG:.0f}\u00b0 and resumes "
+        f"the clock (or press K in Stellarium){RESET}"
+    )
 
 
 async def main() -> int:
