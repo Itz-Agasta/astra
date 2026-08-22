@@ -382,7 +382,7 @@ async def _adopt_stellarium_location() -> None:
     """
     if cfg.observer.explicitly_set:
         log.info("Observer pinned by CCE_OBSERVER_*: "
-                 f"lat={cfg.observer.latitude:.4f}, lon={cfg.observer.longitude:.4f}"
+                 f"lat={observer.latitude:.4f}, lon={observer.longitude:.4f}"
         )
         return
     try:
