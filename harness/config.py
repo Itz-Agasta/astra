@@ -140,11 +140,16 @@ class ESP32Config:
         default_factory=lambda: float(os.getenv("CCE_ESP32_ALT_OFFSET_DEG", "0.0"))
     )
     invert_az: bool = field(
-        default_factory=lambda: os.getenv("CCE_ESP32_INVERT_AZ", "false").lower() in ("1", "true", "yes")
+        default_factory=lambda: (
+            os.getenv("CCE_ESP32_INVERT_AZ", "false").lower() in ("1", "true", "yes")
+        )
     )
     invert_alt: bool = field(
-        default_factory=lambda: os.getenv("CCE_ESP32_INVERT_ALT", "false").lower() in ("1", "true", "yes")
+        default_factory=lambda: (
+            os.getenv("CCE_ESP32_INVERT_ALT", "false").lower() in ("1", "true", "yes")
+        )
     )
+
 
 @dataclass(frozen=True)
 class HarnessConfig:

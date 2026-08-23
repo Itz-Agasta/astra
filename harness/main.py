@@ -439,8 +439,9 @@ async def _adopt_stellarium_location() -> None:
     Skipped when CCE_OBSERVER_* was set -- an explicit choice always wins.
     """
     if cfg.observer.explicitly_set:
-        log.info("Observer pinned by CCE_OBSERVER_*: "
-                 f"lat={observer.latitude:.4f}, lon={observer.longitude:.4f}"
+        log.info(
+            "Observer pinned by CCE_OBSERVER_*: "
+            f"lat={observer.latitude:.4f}, lon={observer.longitude:.4f}"
         )
         return
     try:
@@ -451,7 +452,10 @@ async def _adopt_stellarium_location() -> None:
 
     moved_km = _rough_distance_km(observer.latitude, observer.longitude, lat, lon)
     observer.adopt(lat, lon, elev_km, source="stellarium")
-    log.info(f"Observer location adopted from Stellarium: lat={lat:.4f}, lon={lon:.4f}, elev_km={elev_km:.3f}km")
+    log.info(
+        f"Observer location adopted from Stellarium: "
+        f"lat={lat:.4f}, lon={lon:.4f}, elev_km={elev_km:.3f}km"
+    )
     if moved_km > 50:
         log.warning(
             f"Stellarium's location is {moved_km:.0f} km from the configured default. "
