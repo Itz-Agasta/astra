@@ -202,19 +202,41 @@ async def _await_stellarium_arrival(ra_deg: float, dec_deg: float) -> None:
 #  Display mirroring
 
 
+async def refresh_display() -> None:
+    """Re-point the Stellarium display at where the mount now is.
+
+    Mirroring happens as part of a slew, but Stellarium's own view drifts
+    whenever its clock advances, so a display that was correct when the mount
+    stopped can be a degree out by the time anyone looks at it. The mount is
+    unaffected -- only the picture is -- so re-assert the picture once the
+    pointing is final.
+    """
+    if is_indi():
+        await _mirror_to_stellarium()
+
+
 async def _mirror_to_stellarium() -> None:
     """Show an INDI mount's position on the Stellarium sky.
 
-    Purely a display: Stellarium is no longer the mount, it is the monitor.
-    We mirror the *reported* position because that is what a real observatory
-    display would draw -- the mount's own idea of where it is looking.
+    Purely a display: Stellarium is no longer the mount, it is the eyepiece.
+    So it mirrors the *true* position, not the mount's claim -- capture.py
+    renders its frames from the same true position, and a display showing the
+    mount's belief instead would contradict the very image the plate solver is
+    working from. On a mount with a six-arcminute pointing error that is not a
+    subtlety: zoomed to a one-arcminute showcase field, the two differ by more
+    than a screen and the target sits outside a frame the loop has correctly
+    centred.
+
+    Real hardware publishes no ground truth, so true_position() falls back to
+    the mount's own claim there and this becomes the observatory display it
+    reads like.
 
     Never fatal. A dead display must not be able to stop a working mount.
     """
     if not cfg.mount.mirror_to_stellarium:
         return
     try:
-        ra, dec = await reported_position()
+        ra, dec = await true_position()
         await stellarium.slew(ra, dec)
     except Exception as exc:
         log.debug(f"Could not mirror mount position to Stellarium: {exc}")
