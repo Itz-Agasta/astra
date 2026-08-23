@@ -1,0 +1,3 @@
+[submodule "stellarium"]
+	path = stellarium
+	url = https://github.com/s9swata/stellarium
