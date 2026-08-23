@@ -125,6 +125,7 @@ async def _thaw_sky(previous: float | None) -> None:
 # Wider than the showcase zoom, narrow enough that the target is visible.
 _SEARCH_FOV_DEG = 20.0
 
+
 async def _calibration_loop(job_id: str) -> None:
     """Freeze the sky, run the loop, keep it frozen on lock."""
     # A previous locked run leaves the sky frozen and the FOV at showcase
@@ -135,6 +136,11 @@ async def _calibration_loop(job_id: str) -> None:
         except Exception as exc:
             log.warning(f"Could not reset FOV from previous run: {exc}")
     previous_rate = await _freeze_sky()
+    if cfg.simulation.enabled and not mount.is_indi():
+        # The clock was just resynchronised, and Stellarium may still owe us
+        # the resulting swing. Take it here, where the loop is about to
+        # measure everything anyway, rather than after it has finished.
+        await stellarium.wait_until_view_still()
     try:
         await _run_calibration(job_id)
     finally:
@@ -273,6 +279,25 @@ async def _run_calibration(job_id: str) -> None:
             # slew closing the whole remaining gap, and what is left is the
             # solver residual by itself.
             total_error = await _final_correction(job_id, delta_ra, delta_dec, total_error)
+            total_error = await _settle_and_verify(job_id, total_error)
+            job = store.get_job(job_id)
+            if job is None or job.status in ("aborted", "failed"):
+                return
+
+            # The zoom takes several seconds and is exactly where a late clock
+            # jump tends to land, so it happens *before* the job is called
+            # done, and the pointing is checked once more afterwards. Anything
+            # watching this job -- demo.py, the dashboard, Claude through the
+            # MCP server -- reads the result the moment the status flips, so
+            # flipping it early hands them a measurement of a view that is
+            # still moving, and a target that is centred half a second later
+            # gets reported as more than a degree out.
+            store.update_job(job_id, message=f"Locked on {job.target} — settling the view")
+            await store.broadcast_job(job)
+            await _showcase_zoom(job.target, job.source, total_error)
+            total_error = await _settle_and_verify(job_id, total_error)
+            await mount.refresh_display()
+
             job = store.get_job(job_id)
             if job is None or job.status in ("aborted", "failed"):
                 return
@@ -283,7 +308,6 @@ async def _run_calibration(job_id: str) -> None:
             )
             await store.broadcast_job(job)
             log.info(f'[{job_id}] LOCKED — {total_error:.1f}" after {iteration} iterations')
-            await _showcase_zoom(job.target, job.source, total_error)
             return
 
         # 5. Nudge the command by the damped error.
@@ -394,6 +418,96 @@ async def _final_correction(
     return refined
 
 
+# The sky is held still before each re-check, and the pointing is only
+# accepted once a fresh solve agrees. Three tries is enough for a clock that
+# jumped once; a mount that cannot hold position at all is a different fault.
+_SETTLE_ATTEMPTS = 3
+
+
+async def _settle_and_verify(job_id: str, total_error: float) -> float:
+    """Hold the sky still, then confirm the pointing survived being held.
+
+    Stellarium's view is anchored so that an advancing simulation clock walks
+    it east at the sidereal rate -- about 15" per simulated second, purely in
+    RA, with Dec untouched. The clock is paused for the whole loop, but that
+    pause is a *request* to another process: Stellarium can apply it late and
+    then catch up on the backlog in a single jump. When the jump lands after
+    the last solve, every number the loop can see still looks perfect while
+    the target has quietly walked a degree off the frame -- the same failure
+    the arrival wait in mount.py exists to catch, arriving from the other end.
+
+    The plate solver is both the victim and the cure. It reports where we
+    actually are, so one more solve *after* the sky is genuinely still says
+    whether the lock is real. Nothing here reads the simulator's answer sheet:
+    it is the same measurement the loop has used all along, and on real
+    hardware it is simply "check the pointing once the mount has stopped".
+    """
+    thr = cfg.calibration.converge_threshold_arcsec
+    job = store.get_job(job_id)
+    if job is None:
+        return total_error
+
+    measured = total_error
+    for attempt in range(_SETTLE_ATTEMPTS):
+        await _freeze_sky()
+        if cfg.simulation.enabled and not mount.is_indi():
+            # With an INDI mount the Stellarium view is a display, not the
+            # boresight, so its settling says nothing about the pointing.
+            await stellarium.wait_until_view_still()
+        try:
+            image, hint = await capture_frame(frame_index=0)
+            result = solve(image, hint=hint)
+        except Exception as exc:
+            log.warning(f'[{job_id}] settle check failed, keeping {total_error:.1f}": {exc}')
+            return total_error
+
+        d_ra = (job.target_ra - result.ra + 180) % 360 - 180
+        d_dec = job.target_dec - result.dec
+        measured = math.hypot(d_ra, d_dec) * 3600
+
+        store.update_job(
+            job_id,
+            current_ra=round(result.ra, 6),
+            current_dec=round(result.dec, 6),
+            error_ra_arcsec=round(abs(d_ra) * 3600, 2),
+            error_dec_arcsec=round(abs(d_dec) * 3600, 2),
+            total_error_arcsec=round(measured, 2),
+            solver_residual_arcsec=result.residual_arcsec,
+            stars_matched=result.stars_matched,
+            solve_time_ms=result.solve_time_ms,
+        )
+
+        if measured <= thr:
+            if attempt:
+                log.info(f'[{job_id}] settled after {attempt} extra correction(s): {measured:.1f}"')
+            return measured
+
+        log.warning(
+            f'[{job_id}] the sky moved after lock -- {measured:.1f}" off once held still '
+            f"(attempt {attempt + 1}/{_SETTLE_ATTEMPTS}); correcting again"
+        )
+        job.history.append(
+            {
+                "iteration": job.iteration,
+                "error_arcsec": round(measured, 2),
+                "ra": round(result.ra, 6),
+                "dec": round(result.dec, 6),
+                "solver_residual_arcsec": result.residual_arcsec,
+                "elapsed_seconds": job.elapsed_seconds,
+                "settle_correction": True,
+            }
+        )
+        try:
+            commanded_ra, commanded_dec = await mount.reported_position()
+            await slew(commanded_ra + d_ra, commanded_dec + d_dec)
+        except Exception as exc:
+            log.error(f"[{job_id}] could not correct after the sky moved: {exc}")
+            return measured
+
+    log.warning(f'[{job_id}] still {measured:.1f}" out after {_SETTLE_ATTEMPTS} settle attempts')
+    return measured
+
+
 _SHOWCASE_FOV = {
     "horizons": 0.02,
     "simbad": 1.50,
@@ -402,6 +516,17 @@ _SHOWCASE_FOV = {
     "star": 0.20,
 }
 _SHOWCASE_BY_NAME = {"moon": 1.0, "sun": 1.0}
+# Stellarium's own object type, which is the only thing that can tell Vega
+# apart from the Andromeda Galaxy -- both come back from the resolver as
+# "simbad", and they want fields nearly ten times apart.
+_SHOWCASE_BY_TYPE = {
+    "star": 0.20,
+    "planet": 0.02,
+    "galaxy": 1.50,
+    "nebula": 1.50,
+    "open cluster": 1.50,
+    "globular cluster": 0.50,
+}
 _SHOWCASE_MARGIN = 6.0
 _ZOOM_STEPS = 30
 _ZOOM_STEP_S = 0.06
@@ -411,7 +536,14 @@ async def _showcase_zoom(target: str, source: str, error_arcsec: float) -> None:
     """Cosmetic FOV walk after lock — same numbers as demo.py. Never fails the job."""
     if not cfg.simulation.enabled:
         return
-    fov = _SHOWCASE_BY_NAME.get(target.lower(), _SHOWCASE_FOV.get(source, 0.50))
+    kind = None
+    try:
+        kind = await stellarium.get_object_type(target)
+    except Exception as exc:
+        log.debug(f"Could not read Stellarium's type for {target}: {exc}")
+    fov = _SHOWCASE_BY_NAME.get(target.lower()) or (
+        _SHOWCASE_BY_TYPE.get(kind or "") or _SHOWCASE_FOV.get(source, 0.50)
+    )
     if error_arcsec > 0:
         fov = max(fov, error_arcsec / 3600 * _SHOWCASE_MARGIN)
     try:

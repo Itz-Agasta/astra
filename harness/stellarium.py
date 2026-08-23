@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 
@@ -82,6 +83,68 @@ async def get_view() -> tuple[float, float]:
         ra_deg = math.degrees(ra_rad) % 360
         dec_deg = math.degrees(dec_rad)
         return ra_deg, dec_deg
+
+
+async def wait_until_view_still(
+    quiet_s: float = 1.0, timeout_s: float = 8.0, tolerance_arcsec: float = 1.0
+) -> bool:
+    """Block until the view stops moving on its own. Returns False on timeout.
+
+    Stellarium anchors the view horizontally, so its J2000 direction is a
+    function of the simulation clock: every second the clock advances swings
+    the view 15" east in RA, Dec untouched. Pausing the clock desynchronises
+    it from real time, and resynchronising -- what `actionReturn_To_Current_Time`
+    does at the top of a run -- pays the whole gap back in one jump. A minute
+    spent frozen is nearly a thousand arcseconds of swing.
+
+    Stellarium does not always apply that jump while we are looking. It can
+    land after the loop has finished measuring, at which point the target has
+    left a frame that every number we can see says is centred. So rather than
+    trusting a clock command to have taken effect, watch the view until it
+    holds still, and only then believe what it says.
+    """
+    import math
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_s
+    last = await get_view()
+    still_since = loop.time()
+
+    while True:
+        await asyncio.sleep(0.15)
+        current = await get_view()
+        d_ra = (current[0] - last[0] + 180) % 360 - 180
+        moved = math.hypot(d_ra * math.cos(math.radians(current[1])), current[1] - last[1]) * 3600
+        now = loop.time()
+        if moved > tolerance_arcsec:
+            log.debug(f'View still moving ({moved:.1f}" in 0.15s); waiting for it to settle')
+            still_since = now
+        elif now - still_since >= quiet_s:
+            return True
+        last = current
+        if now >= deadline:
+            log.warning(
+                f"Stellarium's view never held still for {quiet_s:.1f}s within "
+                f"{timeout_s:.0f}s -- measurements taken now may be stale"
+            )
+            return False
+
+
+async def get_object_type(name: str) -> str | None:
+    """Stellarium's own classification of an object -- "Star", "planet", "galaxy".
+
+    Used to pick how far to zoom in after a lock. The resolver only knows
+    which *service* answered (Horizons or Simbad), and Simbad answers for both
+    Vega and the Andromeda Galaxy, which want fields an order of magnitude
+    apart. Stellarium already knows the difference, so ask it.
+    """
+    base = cfg.simulation.url
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        resp = await client.get(f"{base}/api/objects/info", params={"name": name, "format": "json"})
+        if resp.status_code != 200:
+            return None
+        value = resp.json().get("type")
+        return str(value).lower() if value else None
 
 
 async def get_location() -> tuple[float, float, float]:
