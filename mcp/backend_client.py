@@ -123,8 +123,9 @@ def _report_activity(method: str, path: str, result: dict) -> None:
     """Best-effort notification of one MCP call for the on-screen HUD."""
     base = path.split("/")[1] if path.startswith("/") else path.split("/")[0]
     tool = _TOOL_BY_ENDPOINT.get((method, f"/{base}"))
+    # Polls are not user actions — keep Last tool as point_to / abort / etc.
     if tool is None and method == "GET" and base == "calibrate":
-        tool = "get_calibration_status"
+        return
     if tool is None:
         return
     try:
