@@ -64,7 +64,7 @@ def geocode_location(query: str) -> dict[str, Any] | None:
             resp = client.get(f"{NOMINATIM_BASE}/search", params=params, headers=headers)
             resp.raise_for_status()
             data = resp.json()
-    except (httpx.HTTPError, ValueError):
+    except httpx.HTTPError, ValueError:
         return None
 
     if not data:
@@ -103,7 +103,7 @@ def get_elevation(lat: float, lon: float) -> float:
             data = resp.json()
             elevation_m = data["results"][0].get("elevation", 0.0) or 0.0
             elevation_km = elevation_m / 1000.0
-    except (httpx.HTTPError, ValueError, KeyError, IndexError):
+    except httpx.HTTPError, ValueError, KeyError, IndexError:
         elevation_km = 0.0
 
     _elevation_cache[cache_key] = elevation_km

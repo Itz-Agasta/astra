@@ -149,7 +149,7 @@ async def preflight(client: httpx.AsyncClient) -> bool:
         return False
 
     obs = (await client.get(f"{BASE}/observer")).json()
-    print (f"   observer: lat={obs['latitude']:.4f} lon={obs['longitude']:.4f}") 
+    print(f"   observer: lat={obs['latitude']:.4f} lon={obs['longitude']:.4f}")
 
     # Stellarium holds ~1.1 GB and is the fattest process on the box, so it is
     # what an OOM killer reaches for first. Warn before we make things worse.
@@ -187,6 +187,10 @@ async def park(client: httpx.AsyncClient) -> None:
         # is actually drawn on screen.
         await stellarium.do_action("actionReturn_To_Current_Time")
         await stellarium.set_time_rate(stellarium.REAL_TIME_RATE)
+        # Resyncing the clock pays back the whole time we were frozen in one
+        # jump, and the view swings 15" per second of it. Take that swing now,
+        # while the view is deliberately parked in the wrong place anyway.
+        await stellarium.wait_until_view_still()
         print(f"  {DIM}sky resumed at real time{RESET}")
     except Exception as exc:
         print(f"  {DIM}(could not resume the clock: {exc}){RESET}")
@@ -367,19 +371,20 @@ async def hold_sky(attempts: int = 4) -> bool:
 
 async def showcase(target: str, category: str, final: dict) -> None:
     rule(f"6 \u00b7 Zooming in on {target}")
+    # Freeze before measuring, not after. At this magnification a live sky
+    # visibly walks the target off centre while anyone is still looking at it
+    # -- the Moon at ~0.9"/s crosses its own width in ten minutes -- and a
+    # measurement taken while it is still moving picks the framing for a
+    # position the target has already left.
+    held = await hold_sky()
+    if not held:
+        print(f"  {DIM}(could not hold the sky still){RESET}")
+
     # Prefer the measured offset: the solver's estimate is floored by its own
     # residual and would hold the zoom ~40x wider than the pointing warrants.
     measured = await true_offset(target)
     worst = worst_case_error(final)
     fov = showcase_fov(target, category, measured if measured is not None else worst)
-
-    # Freeze first, then zoom. At this magnification a live sky visibly walks
-    # the target off centre while anyone is still looking at it -- the Moon at
-    # ~0.9"/s crosses its own width in ten minutes -- and freezing before the
-    # zoom also means the framing we settle on is the framing that stays.
-    held = await hold_sky()
-    if not held:
-        print(f"  {DIM}(could not hold the sky still){RESET}")
 
     print(f"  {CYAN}\u2192 watch Stellarium zoom{RESET}")
     try:

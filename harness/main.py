@@ -26,8 +26,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
-
-from . import capture, catalog, motor, solver, stellarium, esp32
+from . import capture, catalog, esp32, motor, mount, solver, stellarium
 from .calibrator import abort_job, start_calibration
 from .config import cfg, observer
 from .resolver import CATEGORIES, resolve
@@ -64,7 +63,9 @@ class SlewRequest(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    log.info(f"Astra harness starting (simulation={cfg.simulation.enabled})")
+    log.info(
+        f"Astra harness starting (simulation={cfg.simulation.enabled}, mount={cfg.mount.backend})"
+    )
 
     # Load the tetra3 database off the event loop -- it takes ~1s and we do not
     # want the first calibration to eat that.
@@ -72,9 +73,23 @@ async def lifespan(app: FastAPI):
     store.status.solver_ready = ready
     log.info(f"Solver ready: {ready} (backend={cfg.solver.backend})")
 
+    mount_ok = await mount.connect()
+    store.status.mount_connected = mount_ok
+    if mount.is_indi():
+        log.info(
+            f"Mount backend: INDI at {cfg.mount.indi_url} "
+            f"device='{cfg.mount.indi_device}' (connected={mount_ok})"
+        )
+        if not mount_ok:
+            log.error(
+                "Start one with:  indiserver -v indi_simulator_telescope"
+                "  (or set CCE_MOUNT=stellarium)"
+            )
+
     if cfg.simulation.enabled and await _stellarium_reachable():
         store.status.camera_connected = True
-        store.status.mount_connected = True
+        if not mount.is_indi():
+            store.status.mount_connected = True
         # Tracking makes Stellarium snap back after every slew, so kill it once
         # here rather than fighting it on each iteration.
         try:
@@ -104,6 +119,7 @@ async def lifespan(app: FastAPI):
     yield
     if cfg.simulation.enabled:
         await esp32.disconnect()
+    await mount.disconnect()
     log.info("Astra harness shutting down")
 
 
@@ -294,9 +310,11 @@ async def get_status() -> dict:
     reachable = await _stellarium_reachable() if cfg.simulation.enabled else False
     if reachable:
         store.status.camera_connected = True
-        store.status.mount_connected = True
+        if not mount.is_indi():
+            store.status.mount_connected = True
     return {
         "simulation": cfg.simulation.enabled,
+        "mount_backend": cfg.mount.backend,
         "camera_connected": store.status.camera_connected,
         "solver_ready": store.status.solver_ready,
         "solver_backend": cfg.solver.backend,
@@ -421,8 +439,9 @@ async def _adopt_stellarium_location() -> None:
     Skipped when CCE_OBSERVER_* was set -- an explicit choice always wins.
     """
     if cfg.observer.explicitly_set:
-        log.info("Observer pinned by CCE_OBSERVER_*: "
-                 f"lat={observer.latitude:.4f}, lon={observer.longitude:.4f}"
+        log.info(
+            "Observer pinned by CCE_OBSERVER_*: "
+            f"lat={observer.latitude:.4f}, lon={observer.longitude:.4f}"
         )
         return
     try:
@@ -433,7 +452,10 @@ async def _adopt_stellarium_location() -> None:
 
     moved_km = _rough_distance_km(observer.latitude, observer.longitude, lat, lon)
     observer.adopt(lat, lon, elev_km, source="stellarium")
-    log.info(f"Observer location adopted from Stellarium: lat={lat:.4f}, lon={lon:.4f}, elev_km={elev_km:.3f}km")
+    log.info(
+        f"Observer location adopted from Stellarium: "
+        f"lat={lat:.4f}, lon={lon:.4f}, elev_km={elev_km:.3f}km"
+    )
     if moved_km > 50:
         log.warning(
             f"Stellarium's location is {moved_km:.0f} km from the configured default. "

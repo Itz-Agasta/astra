@@ -11,4 +11,4 @@ from enum import Enum
 
 class TargetType(Enum):
     SOLAR_SYSTEM = "solar_system"  # → JPL Horizons
-    DEEP_SKY = "deep_sky"          # → Simbad
+    DEEP_SKY = "deep_sky"  # → Simbad

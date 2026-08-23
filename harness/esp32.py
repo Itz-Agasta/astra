@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 import math
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import serial  # pyserial
 
@@ -33,11 +33,15 @@ async def connect(retries: int = 5) -> None:
     last_exc: Exception | None = None
     for attempt in range(1, retries + 1):
         try:
+            # Wrapped in a lambda rather than passed as (func, *args): the
+            # type checker cannot line up serial.Serial's overloads with
+            # to_thread's ParamSpec, and reports a false positive either way.
             _ser = await asyncio.to_thread(
-                serial.Serial,
-                cfg.esp32.port,
-                cfg.esp32.baud_rate,
-                timeout=cfg.esp32.timeout_s,
+                lambda: serial.Serial(
+                    cfg.esp32.port,
+                    cfg.esp32.baud_rate,
+                    timeout=cfg.esp32.timeout_s,
+                )
             )
             await asyncio.sleep(2.0)  # ESP32 resets on port open -- give firmware time to boot
             log.info(
@@ -70,10 +74,11 @@ async def disconnect() -> None:
 
 # --- RA/Dec -> Alt/Az (pure stdlib, no network calls) -----------------------
 
+
 def _julian_date(dt: datetime) -> float:
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    dt = dt.astimezone(timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
+    dt = dt.astimezone(UTC)
     y, m, d = dt.year, dt.month, dt.day
     ut_hours = dt.hour + dt.minute / 60 + dt.second / 3600
     if m <= 2:
@@ -87,10 +92,7 @@ def _julian_date(dt: datetime) -> float:
 def _gmst_deg(jd: float) -> float:
     t = (jd - 2451545.0) / 36525.0
     gmst = (
-        280.46061837
-        + 360.98564736629 * (jd - 2451545.0)
-        + 0.000387933 * t**2
-        - (t**3) / 38710000.0
+        280.46061837 + 360.98564736629 * (jd - 2451545.0) + 0.000387933 * t**2 - (t**3) / 38710000.0
     )
     return gmst % 360.0
 
@@ -103,7 +105,7 @@ def ra_dec_to_alt_az(
     mock mount roughly the right direction, not precision astrometry.
     Returns (az_deg, alt_deg).
     """
-    dt = dt or datetime.now(timezone.utc)
+    dt = dt or datetime.now(UTC)
     jd = _julian_date(dt)
     lst = (_gmst_deg(jd) + lon_deg) % 360.0
 
@@ -116,7 +118,9 @@ def ra_dec_to_alt_az(
     sin_alt = math.sin(dec) * math.sin(lat) + math.cos(dec) * math.cos(lat) * math.cos(ha)
     alt = math.asin(max(-1.0, min(1.0, sin_alt)))
 
-    cos_az = (math.sin(dec) - math.sin(alt) * math.sin(lat)) / (math.cos(alt) * math.cos(lat) + 1e-12)
+    cos_az = (math.sin(dec) - math.sin(alt) * math.sin(lat)) / (
+        math.cos(alt) * math.cos(lat) + 1e-12
+    )
     az = math.acos(max(-1.0, min(1.0, cos_az)))
     if math.sin(ha) > 0:
         az = 2 * math.pi - az
@@ -124,12 +128,16 @@ def ra_dec_to_alt_az(
     return math.degrees(az), math.degrees(alt)
 
 
-def _linear_map(value: float, in_min: float, in_max: float, out_min: float, out_max: float) -> float:
+def _linear_map(
+    value: float, in_min: float, in_max: float, out_min: float, out_max: float
+) -> float:
     value = max(in_min, min(in_max, value))
     return out_min + (value - in_min) * (out_max - out_min) / (in_max - in_min)
 
 
-def ra_dec_to_servo_angles(ra_deg: float, dec_deg: float, dt: datetime | None = None) -> tuple[float, float]:
+def ra_dec_to_servo_angles(
+    ra_deg: float, dec_deg: float, dt: datetime | None = None
+) -> tuple[float, float]:
     """
     Convert equatorial (RA, Dec) to servo-ready angles for the mock mount's
     two pan/tilt axes. Returns (servo_az_deg, servo_alt_deg), clamped to 0-180.
@@ -153,6 +161,7 @@ def ra_dec_to_servo_angles(ra_deg: float, dec_deg: float, dt: datetime | None = 
 
 
 # --- Serial command protocol -------------------------------------------------
+
 
 async def _send_command(payload: dict) -> dict:
     """Send one newline-delimited JSON command, block until one JSON response line comes back."""

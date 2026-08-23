@@ -19,7 +19,9 @@ log = logging.getLogger("test_motor")
 
 
 def print_conversion(name: str, ra_deg: float, dec_deg: float) -> None:
-    az_deg, alt_deg = esp32.ra_dec_to_alt_az(ra_deg, dec_deg, cfg.observer.latitude, cfg.observer.longitude)
+    az_deg, alt_deg = esp32.ra_dec_to_alt_az(
+        ra_deg, dec_deg, cfg.observer.latitude, cfg.observer.longitude
+    )
     servo_az, servo_alt = esp32.ra_dec_to_servo_angles(ra_deg, dec_deg)
     print(
         f"  {name}: RA={ra_deg:.2f}° Dec={dec_deg:.2f}°  ->  "
@@ -45,7 +47,9 @@ async def main() -> None:
     print()
 
     # --- Part 2: real serial round-trip to the ESP32 ---
-    answer = input("Connect to the ESP32 over serial and send real commands? [y/N] ").strip().lower()
+    answer = (
+        input("Connect to the ESP32 over serial and send real commands? [y/N] ").strip().lower()
+    )
     if answer != "y":
         print("Skipping hardware test.")
         return

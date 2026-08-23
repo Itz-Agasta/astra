@@ -30,3 +30,8 @@ next-env.d.ts
 # IDEs
 .vscode/
 .zed/
+
+# Secrets and scratch
+.env
+.env.local
+error.txt

@@ -92,6 +92,37 @@ class CalibrationConfig:
 
 
 @dataclass(frozen=True)
+class MountConfig:
+    """Which thing actually moves, and how we talk to it.
+
+    Kept apart from SimulationConfig on purpose: a real INDI mount driving a
+    simulated camera is the normal state of affairs during hardware bring-up,
+    and it is the only configuration that can be demonstrated on a laptop.
+    """
+
+    # "stellarium" moves the simulated sky. "indi" drives a real mount driver
+    # over the wire -- the simulator and an observatory mount are the same
+    # path, differing only in which driver indiserver loaded.
+    backend: str = field(default_factory=lambda: os.getenv("CCE_MOUNT", "stellarium").lower())
+    indi_host: str = field(default_factory=lambda: os.getenv("CCE_INDI_HOST", "localhost"))
+    indi_port: int = field(default_factory=lambda: int(os.getenv("CCE_INDI_PORT", "7624")))
+    indi_device: str = field(
+        default_factory=lambda: os.getenv("CCE_INDI_DEVICE", "Telescope Simulator")
+    )
+    # With an INDI mount, Stellarium stops being the telescope and becomes the
+    # display: it follows the mount so there is still a sky to look at.
+    mirror_to_stellarium: bool = field(
+        default_factory=lambda: (
+            os.getenv("CCE_MIRROR_STELLARIUM", "true").lower() in ("1", "true", "yes")
+        )
+    )
+
+    @property
+    def indi_url(self) -> str:
+        return f"{self.indi_host}:{self.indi_port}"
+
+
+@dataclass(frozen=True)
 class ESP32Config:
     # ESP32 is wired via USB, not WiFi -- this is a serial device path, not a host.
     port: str = field(default_factory=lambda: os.getenv("CCE_ESP32_PORT", "/dev/ttyUSB0"))
@@ -109,17 +140,23 @@ class ESP32Config:
         default_factory=lambda: float(os.getenv("CCE_ESP32_ALT_OFFSET_DEG", "0.0"))
     )
     invert_az: bool = field(
-        default_factory=lambda: os.getenv("CCE_ESP32_INVERT_AZ", "false").lower() in ("1", "true", "yes")
+        default_factory=lambda: (
+            os.getenv("CCE_ESP32_INVERT_AZ", "false").lower() in ("1", "true", "yes")
+        )
     )
     invert_alt: bool = field(
-        default_factory=lambda: os.getenv("CCE_ESP32_INVERT_ALT", "false").lower() in ("1", "true", "yes")
+        default_factory=lambda: (
+            os.getenv("CCE_ESP32_INVERT_ALT", "false").lower() in ("1", "true", "yes")
+        )
     )
+
 
 @dataclass(frozen=True)
 class HarnessConfig:
     simulation: SimulationConfig = field(default_factory=SimulationConfig)
     observer: ObserverConfig = field(default_factory=ObserverConfig)
     solver: SolverConfig = field(default_factory=SolverConfig)
+    mount: MountConfig = field(default_factory=MountConfig)
     calibration: CalibrationConfig = field(default_factory=CalibrationConfig)
     esp32: ESP32Config = field(default_factory=ESP32Config)
 
