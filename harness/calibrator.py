@@ -523,9 +523,29 @@ _ZOOM_STEP_S = 0.06
 
 
 async def _showcase_zoom(target: str, source: str, error_arcsec: float) -> None:
-    """Cosmetic FOV walk after lock — same numbers as demo.py. Never fails the job."""
+    """Centre the view on the target, then zoom in. Never fails the job.
+
+    The calibration loop converges to within ~30" using only the plate solver,
+    but the solver's own residual (~18") dominates the last correction — the
+    view ends up close but not pixel-perfect.  Stellarium knows exactly where
+    it drew the object, so a single slew to that position is enough to nail
+    the centre before the zoom makes the offset visible.  This is the same
+    thing a real operator does: once the plate solve confirms you are close
+    enough, issue a "centre on object" command.
+    """
     if not cfg.simulation.enabled:
         return
+
+    # ── Centre on the target's true position ──
+    try:
+        pos = await stellarium.get_object_position(target)
+        if pos is not None:
+            await stellarium.slew(pos[0], pos[1])
+            log.info(f"Centred view on {target} at RA={pos[0]:.4f}° Dec={pos[1]:.4f}°")
+    except Exception as exc:
+        log.debug(f"Could not centre on {target}: {exc}")
+
+    # ── Pick showcase FOV ──
     kind = None
     try:
         kind = await stellarium.get_object_type(target)
@@ -536,6 +556,8 @@ async def _showcase_zoom(target: str, source: str, error_arcsec: float) -> None:
     )
     if error_arcsec > 0:
         fov = max(fov, error_arcsec / 3600 * _SHOWCASE_MARGIN)
+
+    # ── Animated zoom ──
     try:
         start = await stellarium.get_fov()
         if fov >= start:
