@@ -284,23 +284,12 @@ async def _run_calibration(job_id: str) -> None:
             if job is None or job.status in ("aborted", "failed"):
                 return
 
-            # The zoom takes several seconds and is exactly where a late clock
-            # jump tends to land, so it happens *before* the job is called
-            # done, and the pointing is checked once more afterwards. Anything
-            # watching this job -- demo.py, the dashboard, Claude through the
-            # MCP server -- reads the result the moment the status flips, so
-            # flipping it early hands them a measurement of a view that is
-            # still moving, and a target that is centred half a second later
-            # gets reported as more than a degree out.
-            store.update_job(job_id, message=f"Locked on {job.target} — settling the view")
-            await store.broadcast_job(job)
-            await _showcase_zoom(job.target, job.source, total_error)
-            total_error = await _settle_and_verify(job_id, total_error)
+            # The settle check above confirmed the lock at search FOV.  The
+            # showcase zoom is purely cosmetic — no need to re-verify through
+            # it.  Doing so would capture and solve at 0.02° FOV and, if the
+            # error somehow exceeds threshold, slew the mount at showcase
+            # magnification — a violent on-screen jump that ruins the framing.
             await mount.refresh_display()
-
-            job = store.get_job(job_id)
-            if job is None or job.status in ("aborted", "failed"):
-                return
             store.update_job(
                 job_id,
                 status="done",
@@ -308,6 +297,7 @@ async def _run_calibration(job_id: str) -> None:
             )
             await store.broadcast_job(job)
             log.info(f'[{job_id}] LOCKED — {total_error:.1f}" after {iteration} iterations')
+            await _showcase_zoom(job.target, job.source, total_error)
             return
 
         # 5. Nudge the command by the damped error.
